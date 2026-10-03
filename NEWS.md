@@ -31,3 +31,5 @@
   * `setup_numpyro_env()`: automates virtual environment setup for Metal/CUDA/CPU.
 * Complete S3 generic methods for fitted `fastsae_hb_area` objects:
   * `print()`, `summary()`, `coef()`, `fitted()`, and `residuals()`.
+* Comprehensive empirical benchmarks and feature comparisons against `tipsae` (Stan MCMC) and `fastsae` (INLA baseline) across Beta, Spatial Beta, and Spatio-Temporal Beta models with structured datasets and visualizations in `benchmarks/`.
+

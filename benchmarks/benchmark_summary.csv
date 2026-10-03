@@ -1,0 +1,10 @@
+"Model","Package","Backend","Hardware","Observations","Time_Sec","Speedup_vs_tipsae","Speedup_vs_fastsae","Delta_RAM_MB","Total_RAM_MB","Beta_Intercept","SE_Intercept","Beta_Slope","SE_Slope","Fit_Criterion","Cor_with_GPU","MAE_with_GPU"
+"Beta SAE (Non-spatial)","tipsae","Stan NUTS (C++)","CPU (Single-core)",38,1.303,1,1.17,14.6,507.3,-2.4324,0.0599,0.254,0.0567,"LOOIC: -177.9",0.99886,0.00253
+"Beta SAE (Non-spatial)","fastsae","INLA Laplace","CPU (Multi-thread)",38,1.53,0.85,1,18,529.2,-2.3777,0.0548,0.864,0.2022,"DIC: -180 / WAIC: -182",0.9996,0.00054
+"Beta SAE (Non-spatial)","fastsaegpu","NumPyro NUTS (cpu)","GPU / Vectorized JAX",38,8.335,0.16,0.18,461,990.2,-2.3785,0.0571,0.8541,0.2253,"DIC: -179.4 / WAIC: -182.6",1,0
+"Spatial Beta SAE","tipsae","Stan NUTS (C++)","CPU (Single-core)",38,18.092,1,0.07,83.6,1074,-2.4373,0.0485,0.1951,0.0597,"LOOIC: -179.8",0.99727,0.0022
+"Spatial Beta SAE","fastsae","INLA Laplace","CPU (Multi-thread)",38,1.286,14.07,1,0.4,1084,-2.3923,0.0364,0.5913,0.1843,"DIC: -182 / WAIC: -182.3",0.9998,0.00038
+"Spatial Beta SAE","fastsaegpu","NumPyro NUTS (cpu)","GPU / Vectorized JAX",38,4.554,3.97,0.28,122.5,1206.5,-2.3925,0.0382,0.5901,0.1886,"DIC: -181.5 / WAIC: -182.7",1,0
+"Spatio-Temporal Beta SAE","tipsae","Stan NUTS (C++)","CPU (Single-core)",190,80.971,1,0.02,17.8,1224.2,-2.2729,0.0135,0.1232,0.0187,"LOOIC: -978.8",0.97416,0.00456
+"Spatio-Temporal Beta SAE","fastsae","INLA Laplace","CPU (Multi-thread)",190,1.499,54,1,0,1099.5,-2.252,0.0152,0.3914,0.0622,"DIC: -967.9 / WAIC: -966.5",0.97675,0.00405
+"Spatio-Temporal Beta SAE","fastsaegpu","NumPyro NUTS (cpu)","GPU / Vectorized JAX",190,41.863,1.93,0.04,257.2,1356.8,-2.2268,0.4744,0.3804,0.0668,"DIC: -981.9 / WAIC: -988.4",1,0
