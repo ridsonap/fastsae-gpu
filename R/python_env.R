@@ -4,6 +4,12 @@
 #' @return Logical indicating whether the environment is properly configured.
 #' @export
 check_numpyro_available <- function(device = "auto") {
+  if (device == "cpu" || (device == "auto" && Sys.info()["sysname"] == "Darwin")) {
+    if (Sys.getenv("JAX_PLATFORMS") == "") {
+      Sys.setenv(JAX_PLATFORMS = "cpu")
+    }
+  }
+  
   if (!requireNamespace("reticulate", quietly = TRUE)) {
     cli::cli_alert_warning("Package {.pkg reticulate} is not installed.")
     return(FALSE)
@@ -54,7 +60,7 @@ setup_numpyro_env <- function(envname = "r-numpyro-gpu", method = "auto", device
   
   pkgs <- c("numpy", "scipy", "numpyro")
   if (device == "metal") {
-    pkgs <- c(pkgs, "jax", "jax-metal")
+    pkgs <- c(pkgs, "jax==0.5.0", "jaxlib==0.5.0", "jax-metal==0.1.1")
   } else if (device == "cuda") {
     pkgs <- c(pkgs, "jax[cuda12]")
   } else {

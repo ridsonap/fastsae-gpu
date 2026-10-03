@@ -11,9 +11,8 @@ suppressPackageStartupMessages({
   }
 })
 
-cat("=================================================================\n")
-cat(" Benchmark Spatio-Temporal SAE with NumPyro GPU (n = 500)\n")
-cat("=================================================================\n\n")
+
+devtools::load_all()
 
 # 1. Simulate Spatio-Temporal Data (D = 50, T = 10 -> N = 500)
 set.seed(2026)

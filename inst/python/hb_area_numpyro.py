@@ -12,11 +12,26 @@ from scipy.special import logsumexp
 
 def init_jax_environment(device="auto"):
     """Initializes JAX on the requested accelerator with graceful CPU fallback."""
-    import jax
-    active_dev_str = "cpu"
+    import os
+    import sys
+    
     preferred = device
     if preferred == "auto":
-        preferred = "metal" if sys.platform == "darwin" else "cuda"
+        # On Linux/Windows, try CUDA. On macOS, default to optimized CPU unless metal requested
+        if sys.platform != "darwin":
+            preferred = "cuda"
+        else:
+            preferred = "cpu"
+            
+    if preferred == "cpu":
+        os.environ["JAX_PLATFORMS"] = "cpu"
+    elif preferred == "metal":
+        os.environ["JAX_PLATFORMS"] = "metal,cpu"
+    elif preferred in ("cuda", "gpu"):
+        os.environ["JAX_PLATFORMS"] = "cuda,cpu"
+        
+    import jax
+    active_dev_str = "cpu"
     
     try:
         if preferred in ("metal", "cuda", "gpu"):
@@ -27,17 +42,13 @@ def init_jax_environment(device="auto"):
                     jax.config.update("jax_platform_name", backend_target)
                     active_dev_str = f"{backend_target}:{str(devs[0])}"
                 else:
-                    jax.config.update("jax_platform_name", "cpu")
-                    active_dev_str = "cpu (fallback)"
+                    active_dev_str = "cpu"
             except Exception:
-                jax.config.update("jax_platform_name", "cpu")
-                active_dev_str = "cpu (fallback)"
+                active_dev_str = "cpu"
         else:
-            jax.config.update("jax_platform_name", "cpu")
             active_dev_str = "cpu"
     except Exception:
-        jax.config.update("jax_platform_name", "cpu")
-        active_dev_str = "cpu (fallback)"
+        active_dev_str = "cpu"
         
     import jax.numpy as jnp
     import numpyro
@@ -250,16 +261,49 @@ def fit_numpyro_hb(
             numpyro.sample("y_obs", dist.Beta(a, b), obs=y_obs)
 
     # Run MCMC on GPU/Accelerator
+    # On Apple Metal, sequential avoids vmap control-flow shader limits
+    pref_chain_method = "sequential" if "metal" in dev_str.lower() else ("vectorized" if num_chains > 1 else "sequential")
     rng_key = jax.random.PRNGKey(seed)
     kernel = NUTS(model, init_strategy=init_to_median, target_accept_prob=0.85, max_tree_depth=10)
-    mcmc = MCMC(
-        kernel,
-        num_warmup=num_warmup,
-        num_samples=num_samples,
-        num_chains=num_chains,
-        chain_method="vectorized" if num_chains > 1 else "sequential"
-    )
-    mcmc.run(rng_key)
+    
+    try:
+        mcmc = MCMC(
+            kernel,
+            num_warmup=num_warmup,
+            num_samples=num_samples,
+            num_chains=num_chains,
+            chain_method=pref_chain_method
+        )
+        mcmc.run(rng_key)
+    except Exception as e:
+        err_msg = str(e)
+        if "legalize" in err_msg or "popcnt" in err_msg or "bytecode" in err_msg:
+            dev_str = "cpu (fallback)"
+            cpu_devs = jax.devices("cpu")
+            if len(cpu_devs) > 0:
+                with jax.default_device(cpu_devs[0]):
+                    mcmc = MCMC(
+                        kernel,
+                        num_warmup=num_warmup,
+                        num_samples=num_samples,
+                        num_chains=num_chains,
+                        chain_method="sequential"
+                    )
+                    mcmc.run(rng_key)
+            else:
+                raise e
+        elif pref_chain_method == "vectorized":
+            mcmc = MCMC(
+                kernel,
+                num_warmup=num_warmup,
+                num_samples=num_samples,
+                num_chains=num_chains,
+                chain_method="sequential"
+            )
+            mcmc.run(rng_key)
+        else:
+            raise e
+            
     samples = mcmc.get_samples()
 
     # Extract posterior statistics

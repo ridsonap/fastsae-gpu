@@ -51,6 +51,17 @@ hb_area <- function(
   st_interaction <- match.arg(tolower(st_interaction), choices = c("none", "separable", "domain-specific", "type1", "type2", "type3", "type4"))
   device <- match.arg(tolower(device), choices = c("auto", "metal", "cuda", "cpu"))
 
+  # Automatically configure JAX backend platform before python initializes
+  if (device == "cpu" || (device == "auto" && Sys.info()["sysname"] == "Darwin")) {
+    if (Sys.getenv("JAX_PLATFORMS") == "") {
+      Sys.setenv(JAX_PLATFORMS = "cpu")
+    }
+  } else if (device == "cuda") {
+    if (Sys.getenv("JAX_PLATFORMS") == "") {
+      Sys.setenv(JAX_PLATFORMS = "cuda,cpu")
+    }
+  }
+
   if (!is.data.frame(data)) {
     cli::cli_abort("{.arg data} must be a data frame or tibble.")
   }
