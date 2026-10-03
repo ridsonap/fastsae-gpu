@@ -13,6 +13,14 @@ setup_numpyro_env(envname = "r-numpyro-gpu", method = "auto", device = "auto")
 
 \item{device}{"auto", "metal" (Apple Silicon), "cuda" (NVIDIA), or "cpu".}
 }
+\value{
+Invisible logical \code{TRUE} upon successful setup.
+}
 \description{
 Setup or initialize NumPyro Python environment with GPU support
+}
+\examples{
+\dontrun{
+setup_numpyro_env(device = "auto")
+}
 }

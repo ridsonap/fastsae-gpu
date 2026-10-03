@@ -15,3 +15,6 @@ Logical indicating whether the environment is properly configured.
 \description{
 Check if NumPyro and JAX environment is available
 }
+\examples{
+check_numpyro_available()
+}

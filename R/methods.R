@@ -1,5 +1,54 @@
 `%||%` <- function(x, y) if (is.null(x)) y else x
 
+#' Methods for fastsae_hb_area objects
+#'
+#' Methods for extracting components and summarizing fitted \code{fastsae_hb_area} objects.
+#'
+#' @param x,object An object of class \code{fastsae_hb_area} or \code{summary.fastsae_hb_area}.
+#' @param ... Additional arguments passed to specific methods.
+#' @return
+#' \itemize{
+#'   \item \code{print}: Invisibly returns the object \code{x}.
+#'   \item \code{summary}: An object of class \code{summary.fastsae_hb_area}.
+#'   \item \code{coef}: Named vector of regression coefficients.
+#'   \item \code{fitted}: Numeric vector of fitted values.
+#'   \item \code{residuals}: Numeric vector of residuals.
+#' }
+#' @examples
+#' df_hb <- data.frame(
+#'   domain = paste0("d", 1:5),
+#'   y = c(1.2, 2.3, 1.8, 3.1, 2.5),
+#'   hb = c(1.1, 2.1, 1.9, 2.9, 2.6),
+#'   stringsAsFactors = FALSE
+#' )
+#' estcoef <- data.frame(
+#'   beta = c(1.0, 0.5),
+#'   std.error = c(0.1, 0.05),
+#'   zvalue = c(10, 10),
+#'   pvalue = c(1e-4, 1e-4),
+#'   row.names = c("(Intercept)", "x")
+#' )
+#' obj <- structure(
+#'   list(
+#'     df_hb = df_hb,
+#'     estcoef = estcoef,
+#'     family = "gaussian",
+#'     spatial = "none",
+#'     temporal = "none",
+#'     st_interaction = "none",
+#'     device = "cpu"
+#'   ),
+#'   class = c("fastsae_hb_area", "fastsae")
+#' )
+#' print(obj)
+#' summary(obj)
+#' coef(obj)
+#' fitted(obj)
+#' residuals(obj)
+#' @name fastsae_hb_area-methods
+NULL
+
+#' @rdname fastsae_hb_area-methods
 #' @export
 print.fastsae_hb_area <- function(x, ...) {
   cli::cli_h1("GPU-Accelerated Hierarchical Bayesian Small Area Estimation")
@@ -37,6 +86,7 @@ print.fastsae_hb_area <- function(x, ...) {
   invisible(x)
 }
 
+#' @rdname fastsae_hb_area-methods
 #' @export
 summary.fastsae_hb_area <- function(object, ...) {
   structure(
@@ -57,11 +107,13 @@ summary.fastsae_hb_area <- function(object, ...) {
   )
 }
 
+#' @rdname fastsae_hb_area-methods
 #' @export
 print.summary.fastsae_hb_area <- function(x, ...) {
   print.fastsae_hb_area(x, ...)
 }
 
+#' @rdname fastsae_hb_area-methods
 #' @export
 coef.fastsae_hb_area <- function(object, ...) {
   if (!is.null(object$estcoef) && "beta" %in% names(object$estcoef)) {
@@ -70,6 +122,7 @@ coef.fastsae_hb_area <- function(object, ...) {
   NULL
 }
 
+#' @rdname fastsae_hb_area-methods
 #' @export
 fitted.fastsae_hb_area <- function(object, ...) {
   if (!is.null(object$df_hb) && "hb" %in% names(object$df_hb)) {
@@ -78,6 +131,7 @@ fitted.fastsae_hb_area <- function(object, ...) {
   NULL
 }
 
+#' @rdname fastsae_hb_area-methods
 #' @export
 residuals.fastsae_hb_area <- function(object, ...) {
   if (!is.null(object$df_hb) && all(c("y", "hb") %in% names(object$df_hb))) {

@@ -1,2 +1,17 @@
 ^.*\.Rproj$
 ^\.Rproj\.user$
+^\.github$
+^codecov\.yml$
+^cran-comments\.md$
+^test_.*\.R$
+^benchmarks$
+^coverage\.xml$
+^\.covr$
+^.*\.Rcheck$
+^.*\.tar\.gz$
+(^|/)\.DS_Store$
+(^|/)__pycache__$
+(^|/).*\.pyc$
+^\.Rhistory$
+^\.RData$
+^\.Ruserdata$

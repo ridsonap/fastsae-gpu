@@ -3,18 +3,29 @@ Type: Package
 Title: GPU-Accelerated Hierarchical Bayesian Small Area Estimation
 Version: 0.1.0
 Authors@R: person("Ridson", "Al Farizal P", role = c("aut", "cre"), email = "alfrzlp@gmail.com")
-Description: High-performance area-level Small Area Estimation (SAE) with spatio-temporal
-    dynamics powered by NumPyro and JAX on Apple Silicon (Metal) and NVIDIA (CUDA) GPUs.
+Description: Hierarchical Bayesian area-level Small Area Estimation (SAE)
+    with spatio-temporal dynamics powered by 'NumPyro' <https://num.pyro.ai/>
+    and 'JAX' <https://jax.readthedocs.io/> on Apple Silicon (Metal) and
+    NVIDIA (CUDA) GPUs, with automatic fallback to CPU. Provides spatial,
+    temporal, and spatio-temporal interactions for continuous, count, and
+    bounded survey outcomes using Markov Chain Monte Carlo (MCMC) sampling.
 License: GPL (>= 3)
-Encoding: UTF-8
+URL: https://github.com/ridsonap/fastsae-gpu
+BugReports: https://github.com/ridsonap/fastsae-gpu/issues
+Depends:
+    R (>= 4.1.0)
 Imports:
     cli,
     Matrix,
     stats,
     utils
 Suggests:
+    covr,
     reticulate,
     spdep,
-    testthat (>= 3.0.0)
+    testthat (>= 3.0.0),
+    xml2
+Encoding: UTF-8
+RoxygenNote: 7.3.2
 Config/testthat/edition: 3
 Config/roxygen2/version: 8.0.0

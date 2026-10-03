@@ -20,8 +20,31 @@
 #' @param seed Random seed for MCMC reproducibility (default 42).
 #' @param print_result Logical: print summary of results upon completion (default TRUE).
 #' @param ... Additional arguments.
-#'
 #' @return An object of class \code{c("fastsae_hb_area", "fastsae")}.
+#' @examples
+#' \donttest{
+#' if (check_numpyro_available()) {
+#'   set.seed(42)
+#'   D <- 15
+#'   x <- rnorm(D)
+#'   vardir <- rep(0.1, D)
+#'   y <- 2.0 + 1.2 * x + rnorm(D, sd = sqrt(vardir))
+#'   df <- data.frame(y = y, x = x, vardir = vardir)
+#'
+#'   fit <- hb_area(
+#'     y ~ x,
+#'     data = df,
+#'     vardir = "vardir",
+#'     family = "gaussian",
+#'     warmup = 100L,
+#'     samples = 200L,
+#'     chains = 1L,
+#'     device = "cpu",
+#'     print_result = FALSE
+#'   )
+#'   print(fit)
+#' }
+#' }
 #' @export
 hb_area <- function(
   formula,
@@ -52,6 +75,15 @@ hb_area <- function(
   device <- match.arg(tolower(device), choices = c("auto", "metal", "cuda", "cpu"))
 
   # Automatically configure JAX backend platform before python initializes
+  old_plat <- Sys.getenv("JAX_PLATFORMS", unset = NA)
+  on.exit({
+    if (is.na(old_plat)) {
+      Sys.unsetenv("JAX_PLATFORMS")
+    } else {
+      Sys.setenv(JAX_PLATFORMS = old_plat)
+    }
+  }, add = TRUE)
+
   if (device == "cpu" || (device == "auto" && Sys.info()["sysname"] == "Darwin")) {
     if (Sys.getenv("JAX_PLATFORMS") == "") {
       Sys.setenv(JAX_PLATFORMS = "cpu")
@@ -100,8 +132,14 @@ hb_area <- function(
   trials_vec <- if (!is.null(trials)) as.numeric(.get_variable(data, trials)) else NULL
   exposure_vec <- if (!is.null(exposure)) as.numeric(.get_variable(data, exposure)) else NULL
 
-  # Handle Binomial proportions conversion to integer successes
+  # Validate response data by likelihood family
   y <- y_raw
+  if (family == "gaussian") {
+    if (is.null(vardir_vec)) {
+      cli::cli_abort("For {.code family = 'gaussian'}, {.arg vardir} must be specified.")
+    }
+  }
+
   if (family == "binomial") {
     if (is.null(trials_vec)) {
       cli::cli_abort("For {.code family = 'binomial'}, {.arg trials} must be specified.")
@@ -110,6 +148,23 @@ hb_area <- function(
     if (length(y_valid) > 0 && all(y_valid >= 0 & y_valid <= 1) && any(y_valid %% 1 != 0)) {
       cli::cli_alert_info("Response appears to be proportions; converting to integer counts: {.code round(y * trials)}.")
       y <- as.numeric(round(y * trials_vec))
+    }
+  }
+
+  if (family == "beta") {
+    if (is.null(vardir_vec)) {
+      cli::cli_abort("For {.code family = 'beta'}, {.arg vardir} must be specified.")
+    }
+    y_valid <- y[!is.na(y)]
+    if (any(y_valid <= 0 | y_valid >= 1)) {
+      cli::cli_abort("For {.code family = 'beta'}, response variable must be strictly bounded in (0, 1).")
+    }
+  }
+
+  if (family == "poisson") {
+    y_valid <- y[!is.na(y)]
+    if (any(y_valid < 0) || any(y_valid %% 1 != 0)) {
+      cli::cli_abort("For {.code family = 'poisson'}, response variable must be non-negative integers.")
     }
   }
 

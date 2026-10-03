@@ -73,3 +73,28 @@ An object of class \code{c("fastsae_hb_area", "fastsae")}.
 \description{
 Hierarchical Bayes for Area-Level Small Area Estimation with GPU NumPyro Backend
 }
+\examples{
+\donttest{
+if (check_numpyro_available()) {
+  set.seed(42)
+  D <- 15
+  x <- rnorm(D)
+  vardir <- rep(0.1, D)
+  y <- 2.0 + 1.2 * x + rnorm(D, sd = sqrt(vardir))
+  df <- data.frame(y = y, x = x, vardir = vardir)
+
+  fit <- hb_area(
+    y ~ x,
+    data = df,
+    vardir = "vardir",
+    family = "gaussian",
+    warmup = 100L,
+    samples = 200L,
+    chains = 1L,
+    device = "cpu",
+    print_result = FALSE
+  )
+  print(fit)
+}
+}
+}

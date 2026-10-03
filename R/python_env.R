@@ -2,10 +2,20 @@
 #'
 #' @param device Character: "auto", "metal", "cuda", or "cpu".
 #' @return Logical indicating whether the environment is properly configured.
+#' @examples
+#' check_numpyro_available()
 #' @export
 check_numpyro_available <- function(device = "auto") {
   if (device == "cpu" || (device == "auto" && Sys.info()["sysname"] == "Darwin")) {
     if (Sys.getenv("JAX_PLATFORMS") == "") {
+      old_plat <- Sys.getenv("JAX_PLATFORMS", unset = NA)
+      on.exit({
+        if (is.na(old_plat)) {
+          Sys.unsetenv("JAX_PLATFORMS")
+        } else {
+          Sys.setenv(JAX_PLATFORMS = old_plat)
+        }
+      }, add = TRUE)
       Sys.setenv(JAX_PLATFORMS = "cpu")
     }
   }
@@ -41,6 +51,11 @@ check_numpyro_available <- function(device = "auto") {
 #' @param envname Name of the conda or virtualenv environment. Default "r-numpyro-gpu".
 #' @param method "auto", "virtualenv", or "conda".
 #' @param device "auto", "metal" (Apple Silicon), "cuda" (NVIDIA), or "cpu".
+#' @return Invisible logical \code{TRUE} upon successful setup.
+#' @examples
+#' \dontrun{
+#' setup_numpyro_env(device = "auto")
+#' }
 #' @export
 setup_numpyro_env <- function(envname = "r-numpyro-gpu", method = "auto", device = "auto") {
   if (!requireNamespace("reticulate", quietly = TRUE)) {

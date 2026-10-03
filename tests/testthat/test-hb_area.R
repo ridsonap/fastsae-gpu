@@ -1,7 +1,11 @@
-library(testthat)
-library(fastsaegpu)
+if (requireNamespace("reticulate", quietly = TRUE)) {
+  try(reticulate::use_virtualenv("r-numpyro-gpu", required = FALSE), silent = TRUE)
+}
 
-try(reticulate::use_virtualenv("r-numpyro-gpu", required = FALSE), silent = TRUE)
+test_that("check_numpyro_available returns a logical flag", {
+  res <- check_numpyro_available()
+  expect_type(res, "logical")
+})
 
 test_that("Spatial weights conversion, ICAR scaling factor, and validation work", {
   D <- 20
@@ -20,6 +24,35 @@ test_that("Spatial weights conversion, ICAR scaling factor, and validation work"
   expect_true(w_conv$scale_factor > 0)
   expect_equal(unname(diag(w_conv$adj_mat)), rep(0, D))
   expect_true(isSymmetric(w_conv$adj_mat))
+
+  # Test error when W is NULL
+  expect_error(
+    fastsaegpu:::.convert_spatial_weights(NULL, n_domains = D),
+    "Spatial matrix"
+  )
+
+  # Test error when dimension mismatches
+  W_bad <- matrix(0, 5, 5)
+  expect_error(
+    fastsaegpu:::.convert_spatial_weights(W_bad, n_domains = D),
+    "must be a"
+  )
+
+  # Test error on unsupported object type
+  expect_error(
+    fastsaegpu:::.convert_spatial_weights("invalid", n_domains = D),
+    "Unsupported spatial object type"
+  )
+})
+
+test_that("Variable extractor helper handles columns, formulas, and errors", {
+  df <- data.frame(a = 1:5, b = letters[1:5])
+  expect_equal(fastsaegpu:::.get_variable(df, "a"), 1:5)
+  expect_equal(fastsaegpu:::.get_variable(df, ~ a), 1:5)
+  expect_equal(fastsaegpu:::.get_variable(df, 1:5), 1:5)
+  expect_error(fastsaegpu:::.get_variable(df, "c"), "not found in data")
+  expect_error(fastsaegpu:::.get_variable(df, ~ c), "does not reference")
+  expect_error(fastsaegpu:::.get_variable(df, 1:3), "does not match data")
 })
 
 test_that("Temporal operator mathematical properties are valid", {
@@ -106,9 +139,62 @@ test_that("S3 methods for fastsae_hb_area class work properly", {
   
   sm <- summary(obj)
   expect_s3_class(sm, "summary.fastsae_hb_area")
+
+  # Test print outputs
+  expect_output(print(obj), "beta")
+  expect_output(print(sm), "beta")
+})
+
+test_that("Input validation rejects invalid data across likelihood families", {
+  # Non-data.frame
+  expect_error(hb_area(y ~ x, data = "not_a_df"), "must be a data frame")
+
+  # Gamma strictly positive
+  df_neg <- data.frame(y = c(-1, 2, 3), x = c(1, 2, 3))
+  expect_error(
+    hb_area(y ~ x, data = df_neg, family = "gamma"),
+    "strictly positive"
+  )
+
+  # Negative binomial non-negative integers
+  expect_error(
+    hb_area(y ~ x, data = df_neg, family = "nbinomial"),
+    "non-negative integers"
+  )
+
+  # Poisson non-negative integers
+  expect_error(
+    hb_area(y ~ x, data = df_neg, family = "poisson"),
+    "non-negative integers"
+  )
+
+  # Beta strictly bounded in (0, 1) and vardir requirement
+  df_beta_bad <- data.frame(y = c(0.0, 0.5, 1.2), x = c(1, 2, 3), vardir = rep(0.01, 3))
+  expect_error(
+    hb_area(y ~ x, data = df_beta_bad, vardir = "vardir", family = "beta"),
+    "strictly bounded"
+  )
+  df_beta_novar <- data.frame(y = c(0.2, 0.5, 0.8), x = c(1, 2, 3))
+  expect_error(
+    hb_area(y ~ x, data = df_beta_novar, family = "beta"),
+    "vardir"
+  )
+
+  # Gaussian vardir requirement
+  expect_error(
+    hb_area(y ~ x, data = df_beta_novar, family = "gaussian"),
+    "vardir"
+  )
+
+  # Binomial trials requirement
+  expect_error(
+    hb_area(y ~ x, data = df_beta_novar, family = "binomial"),
+    "trials"
+  )
 })
 
 test_that("End-to-end hb_area executes when NumPyro is available", {
+  skip_on_cran()
   skip_if_not(fastsaegpu::check_numpyro_available(), "NumPyro/JAX not available in Python environment")
   
   set.seed(123)
@@ -135,19 +221,8 @@ test_that("End-to-end hb_area executes when NumPyro is available", {
   expect_true(fit$estcoef["(Intercept)", "beta"] > 0)
 })
 
-test_that("Input validation rejects invalid data for gamma and nbinomial", {
-  df_neg <- data.frame(y = c(-1, 2, 3), x = c(1, 2, 3))
-  expect_error(
-    hb_area(y ~ x, data = df_neg, family = "gamma"),
-    "strictly positive"
-  )
-  expect_error(
-    hb_area(y ~ x, data = df_neg, family = "nbinomial"),
-    "non-negative integers"
-  )
-})
-
 test_that("hb_area fits nbinomial and gamma models", {
+  skip_on_cran()
   skip_if_not(fastsaegpu::check_numpyro_available(), "NumPyro/JAX not available")
 
   set.seed(42)
@@ -194,6 +269,7 @@ test_that("hb_area fits nbinomial and gamma models", {
 })
 
 test_that("hb_area fits BYM and Leroux spatial models", {
+  skip_on_cran()
   skip_if_not(fastsaegpu::check_numpyro_available(), "NumPyro/JAX not available")
 
   set.seed(99)
@@ -246,4 +322,3 @@ test_that("hb_area fits BYM and Leroux spatial models", {
   expect_s3_class(fit_leroux, "fastsae_hb_area")
   expect_true("rho_spatial" %in% fit_leroux$hyperpar$Parameter)
 })
-

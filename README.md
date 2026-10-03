@@ -1,5 +1,11 @@
 # fastsaegpu: GPU-Accelerated Hierarchical Bayesian Small Area Estimation (SAE)
 
+<!-- badges: start -->
+[![R-CMD-check](https://github.com/ridsonap/fastsae-gpu/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/ridsonap/fastsae-gpu/actions/workflows/R-CMD-check.yaml)
+[![Codecov test coverage](https://codecov.io/gh/ridsonap/fastsae-gpu/branch/main/graph/badge.svg)](https://app.codecov.io/gh/ridsonap/fastsae-gpu)
+[![CRAN status](https://www.r-pkg.org/badges/version/fastsaegpu)](https://CRAN.R-project.org/package=fastsaegpu)
+<!-- badges: end -->
+
 `fastsaegpu` adalah implementasi paket R untuk fungsi **`hb_area`** (Hierarchical Bayesian Area-Level Small Area Estimation) yang ditenagai oleh mesin MCMC berkinerja tinggi **NumPyro (JAX)** pada **GPU** (Apple Silicon Metal & NVIDIA CUDA).
 
 ---
@@ -20,7 +26,7 @@
 ## 📦 Struktur Paket
 
 ```
-/Volumes/work/_Projects/fastsaegpu/
+fastsae-gpu/
 ├── DESCRIPTION                   # Metadata paket R
 ├── NAMESPACE                     # Ekspor fungsi dan metode S3
 ├── R/
@@ -29,13 +35,14 @@
 │   ├── python_env.R              # Helper instalasi & deteksi lingkungan NumPyro/JAX
 │   └── utils.R                   # Validasi variabel dan bobot spasial ICAR/Leroux
 ├── inst/
+│   ├── CITATION                  # Format sitasi akademik paket
 │   └── python/
 │       └── hb_area_numpyro.py    # Python NumPyro JAX engine (GPU-accelerated)
 ├── tests/
 │   ├── testthat.R
-│   └── testthat/test-hb_area.R   # Test suite lengkap (28 unit tests)
-└── benchmarks/
-    └── benchmark_spatiotemporal_gpu.R  # Skrip benchmark Spatio-Temporal n=500
+│   └── testthat/test-hb_area.R   # Test suite lengkap unit tests
+└── .github/workflows/
+    └── R-CMD-check.yaml          # Multi-OS CI check & Codecov coverage
 ```
 
 ---
@@ -44,8 +51,12 @@
 
 ### 1. Instalasi Paket R di RStudio / R Console
 ```R
-# Pasang paket langsung dari folder ini:
-devtools::install("/Volumes/work/_Projects/fastsaegpu")
+# Pasang versi rilis dari CRAN (setelah tersedia):
+install.packages("fastsaegpu")
+
+# Atau pasang versi pengembangan dari GitHub:
+# install.packages("remotes")
+remotes::install_github("ridsonap/fastsae-gpu")
 library(fastsaegpu)
 ```
 
