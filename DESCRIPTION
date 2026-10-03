@@ -1,0 +1,20 @@
+Package: fastsaegpu
+Type: Package
+Title: GPU-Accelerated Hierarchical Bayesian Small Area Estimation
+Version: 0.1.0
+Authors@R: person("Ridson", "Al Farizal P", role = c("aut", "cre"), email = "alfrzlp@gmail.com")
+Description: High-performance area-level Small Area Estimation (SAE) with spatio-temporal
+    dynamics powered by NumPyro and JAX on Apple Silicon (Metal) and NVIDIA (CUDA) GPUs.
+License: GPL (>= 3)
+Encoding: UTF-8
+RoxygenNote: 7.3.1
+Imports:
+    cli,
+    Matrix,
+    stats,
+    utils
+Suggests:
+    reticulate,
+    spdep,
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
