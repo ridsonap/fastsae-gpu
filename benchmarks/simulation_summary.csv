@@ -1,0 +1,11 @@
+"Model","Method","Estimator_ID","Backend","Hardware","ARB_pct","RRMSE_pct","RMSE","MAE","CP95_pct","Correlation_r","Avg_Time_Sec","Total_Time_Sec","Speedup_vs_tipsae"
+"Non-Spasial (Beta SAE)","Direct Estimator","Direct","Survei Sampel Langsung","CPU",0.58,3.49,0.0212,0.0169,94,0.9578,0,0,NA
+"Non-Spasial (Beta SAE)","fastsae (Frequentist EBLUP)","fastsae_freq","REML Estimator (C)","CPU Single-core",0.86,3.36,0.0204,0.0162,93.52,0.9574,0.001,0.02,839.52
+"Non-Spasial (Beta SAE)","fastsae (Bayesian INLA)","fastsae_bayes","INLA Laplace (C/Fortran)","CPU Multithread",0.88,3.37,0.0204,0.0162,92.88,0.9571,1.271,31.77,0.6
+"Non-Spasial (Beta SAE)","tipsae (Bayesian Stan NUTS)","tipsae","Stan NUTS (C++)","CPU Single-core",0.84,3.38,0.0205,0.0163,92.24,0.9572,0.767,19.17,1
+"Non-Spasial (Beta SAE)","fastsaegpu (Bayesian NumPyro GPU)","fastsaegpu","NumPyro NUTS (JAX XLA)","GPU / JAX Vectorized",0.82,3.36,0.0204,0.0162,93.04,0.9575,7.964,199.1,0.1
+"Spasial (Besag ICAR)","Direct Estimator","Direct","Survei Sampel Langsung","CPU",0.47,3.19,0.0197,0.0156,94.16,0.9702,0,0,NA
+"Spasial (Besag ICAR)","fastsae (Frequentist EBLUP)","fastsae_freq","REML Estimator (C)","CPU Single-core",0.96,3.16,0.0194,0.0156,93.92,0.9699,0.007,0.18,486.11
+"Spasial (Besag ICAR)","fastsae (Bayesian INLA)","fastsae_bayes","INLA Laplace (C/Fortran)","CPU Multithread",0.88,3.1,0.0191,0.0153,94.64,0.9712,1.211,30.27,2.89
+"Spasial (Besag ICAR)","tipsae (Bayesian Stan NUTS)","tipsae","Stan NUTS (C++)","CPU Single-core",0.77,3.1,0.019,0.0153,93.68,0.9711,3.504,87.59,1
+"Spasial (Besag ICAR)","fastsaegpu (Bayesian NumPyro GPU)","fastsaegpu","NumPyro NUTS (JAX XLA)","GPU / JAX Vectorized",0.83,3.1,0.0191,0.0153,93.44,0.9711,7.439,185.97,0.47

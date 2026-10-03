@@ -149,7 +149,9 @@ def fit_numpyro_hb(
 
     def model():
         # Regression coefficients
-        beta = numpyro.sample("beta", dist.Normal(0.0, 10.0).expand([P]))
+        # Use scale 2.5 for logit-link models (beta, binomial) to prevent sigmoid gradient saturation; 10.0 for others
+        beta_scale = 2.5 if family in ("beta", "binomial") else 10.0
+        beta = numpyro.sample("beta", dist.Normal(0.0, beta_scale).expand([P]))
         linpred_fixed = jnp.dot(X_jnp, beta)
 
         # 1. Spatial Random Effect
@@ -243,7 +245,8 @@ def fit_numpyro_hb(
         else:
             rand_total = rand_total + u_st
 
-        eta = linpred_fixed + rand_total
+        eta_raw = linpred_fixed + rand_total
+        eta = jnp.clip(eta_raw, -8.0, 8.0) if family in ("beta", "binomial") else eta_raw
         numpyro.deterministic("linear_pred", eta)
         numpyro.deterministic("rand_eff", rand_total)
 
