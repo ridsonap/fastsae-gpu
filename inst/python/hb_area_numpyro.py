@@ -129,10 +129,12 @@ def fit_numpyro_hb(
     trials_obs = jnp.asarray(trials_np[obs_idx], dtype=jnp.float32) if trials_np is not None else None
     exposure_obs = jnp.asarray(exposure_np[obs_idx], dtype=jnp.float32) if exposure_np is not None else None
 
-    # Spatial Spectral Decomposition (ICAR basis)
+    # Spatial Spectral Decomposition (ICAR & Leroux basis)
     icar_basis = None
     icar_rank = 0
-    if spatial in ("besag", "bym2") and W_adj is not None:
+    evals_all = None
+    evecs_all = None
+    if spatial in ("besag", "bym2", "bym", "leroux") and W_adj is not None:
         deg = np.sum(W_adj, axis=1)
         L_spatial = np.diag(deg) - W_adj
         evals, evecs = np.linalg.eigh(L_spatial)
@@ -142,6 +144,8 @@ def fit_numpyro_hb(
         # Unit-variance scaled ICAR basis (Riebler et al., 2016)
         icar_basis = jnp.asarray(evecs_pos / np.sqrt(evals_pos * scale_factor), dtype=jnp.float32)
         icar_rank = icar_basis.shape[1]
+        evals_all = jnp.asarray(evals, dtype=jnp.float32)
+        evecs_all = jnp.asarray(evecs, dtype=jnp.float32)
 
     def model():
         # Regression coefficients
@@ -162,6 +166,15 @@ def fit_numpyro_hb(
                 z_icar = numpyro.sample("z_icar", dist.Normal(0.0, 1.0).expand([icar_rank]))
                 u_spatial = sigma_s * jnp.dot(icar_basis, z_icar)
                 numpyro.deterministic("sigma2_u", sigma_s ** 2)
+            elif spatial == "bym":
+                sigma_s = numpyro.sample("sigma_s", dist.HalfNormal(1.0))
+                sigma_iid = numpyro.sample("sigma_iid", dist.HalfNormal(1.0))
+                z_icar = numpyro.sample("z_icar", dist.Normal(0.0, 1.0).expand([icar_rank]))
+                z_iid = numpyro.sample("z_iid", dist.Normal(0.0, 1.0).expand([D]))
+                u_spatial = sigma_s * jnp.dot(icar_basis, z_icar) + sigma_iid * z_iid
+                numpyro.deterministic("sigma2_spatial", sigma_s ** 2)
+                numpyro.deterministic("sigma2_iid", sigma_iid ** 2)
+                numpyro.deterministic("sigma2_u", sigma_s ** 2 + sigma_iid ** 2)
             elif spatial == "bym2":
                 sigma_s = numpyro.sample("sigma_s", dist.HalfNormal(1.0))
                 phi = numpyro.sample("phi", dist.Beta(1.0, 1.0))
@@ -171,6 +184,15 @@ def fit_numpyro_hb(
                 u_spatial = sigma_s * (jnp.sqrt(1.0 - phi) * z_iid + jnp.sqrt(phi) * u_icar)
                 numpyro.deterministic("sigma2_u", sigma_s ** 2)
                 numpyro.deterministic("phi_est", phi)
+            elif spatial == "leroux":
+                sigma_s = numpyro.sample("sigma_s", dist.HalfNormal(1.0))
+                rho_leroux = numpyro.sample("rho_leroux", dist.Beta(1.0, 1.0))
+                prec_evals = rho_leroux * evals_all + (1.0 - rho_leroux)
+                scale_leroux = 1.0 / jnp.sqrt(jnp.maximum(prec_evals, 1e-6))
+                z_leroux = numpyro.sample("z_leroux", dist.Normal(0.0, 1.0).expand([D]))
+                u_spatial = sigma_s * jnp.dot(evecs_all, scale_leroux * z_leroux)
+                numpyro.deterministic("sigma2_u", sigma_s ** 2)
+                numpyro.deterministic("rho_spatial", rho_leroux)
 
         # 2. Temporal Random Effect
         u_temporal = jnp.zeros(T)
@@ -258,7 +280,24 @@ def fit_numpyro_hb(
                 phi_beta = numpyro.sample("phi_beta", dist.HalfNormal(10.0))
             a = jnp.maximum(p[obs_idx] * phi_beta, 1e-4)
             b = jnp.maximum((1.0 - p[obs_idx]) * phi_beta, 1e-4)
-            numpyro.sample("y_obs", dist.Beta(a, b), obs=y_obs)
+            y_obs_clipped = jnp.clip(y_obs, 1e-5, 1.0 - 1e-5)
+            numpyro.sample("y_obs", dist.Beta(a, b), obs=y_obs_clipped)
+
+        elif family == "nbinomial":
+            alpha_nb = numpyro.sample("alpha_nb", dist.HalfNormal(10.0))
+            rate = jnp.exp(eta)
+            numpyro.deterministic("hb_est", rate)
+            lam = rate[obs_idx] * (exposure_obs if exposure_obs is not None else 1.0)
+            numpyro.sample("y_obs", dist.NegativeBinomial2(mean=lam, concentration=alpha_nb), obs=y_obs)
+            numpyro.deterministic("alpha_dispersion", alpha_nb)
+
+        elif family == "gamma":
+            shape_gamma = numpyro.sample("shape_gamma", dist.HalfNormal(10.0))
+            mu_gamma = jnp.exp(eta)
+            numpyro.deterministic("hb_est", mu_gamma)
+            rate_gamma = shape_gamma / jnp.maximum(mu_gamma[obs_idx], 1e-6)
+            numpyro.sample("y_obs", dist.Gamma(concentration=shape_gamma, rate=rate_gamma), obs=y_obs)
+            numpyro.deterministic("shape_param", shape_gamma)
 
     # Run MCMC on GPU/Accelerator
     # On Apple Metal, sequential avoids vmap control-flow shader limits
@@ -329,12 +368,24 @@ def fit_numpyro_hb(
     hyperparams = {}
     if "sigma2_u" in samples:
         hyperparams["sigma2_u"] = float(np.mean(samples["sigma2_u"]))
+    if "sigma2_spatial" in samples:
+        hyperparams["sigma2_spatial"] = float(np.mean(samples["sigma2_spatial"]))
+    if "sigma2_iid" in samples:
+        hyperparams["sigma2_iid"] = float(np.mean(samples["sigma2_iid"]))
+    if "rho_spatial" in samples:
+        hyperparams["rho_spatial"] = float(np.mean(samples["rho_spatial"]))
     if "sigma2_t" in samples:
         hyperparams["sigma2_t"] = float(np.mean(samples["sigma2_t"]))
     if "phi_est" in samples:
         hyperparams["phi"] = float(np.mean(samples["phi_est"]))
     if "rho_t" in samples:
         hyperparams["rho_t"] = float(np.mean(samples["rho_t"]))
+    if "alpha_dispersion" in samples:
+        hyperparams["alpha_dispersion"] = float(np.mean(samples["alpha_dispersion"]))
+    if "shape_param" in samples:
+        hyperparams["shape_param"] = float(np.mean(samples["shape_param"]))
+    if "phi_beta" in samples:
+        hyperparams["phi_beta"] = float(np.mean(samples["phi_beta"]))
 
     # Accurate Pointwise Log-Likelihood, WAIC, and DIC
     S_total = hb_samples.shape[0]
@@ -362,6 +413,47 @@ def fit_numpyro_hb(
         ll = y_obs_val * np.log(lam_post) - lam_post - gammaln(y_obs_val + 1)
         lam_mean = np.mean(lam_post, axis=0)
         ll_mean = y_obs_val * np.log(lam_mean) - lam_mean - gammaln(y_obs_val + 1)
+    elif family == "beta":
+        y_val_clip = np.clip(y_obs_val, 1e-5, 1.0 - 1e-5)
+        p_post = np.clip(hb_samples[:, obs_idx], 1e-5, 1.0 - 1e-5)
+        if vardir_np is not None:
+            phi_val = np.maximum((y_obs_val * (1.0 - y_obs_val) / vardir_np[obs_idx]) - 1.0, 1.0)
+        else:
+            phi_val = float(np.mean(samples.get("phi_beta", 10.0)))
+        a_post = np.maximum(p_post * phi_val, 1e-4)
+        b_post = np.maximum((1.0 - p_post) * phi_val, 1e-4)
+        from scipy.special import betaln
+        ll = (a_post - 1.0) * np.log(y_val_clip) + (b_post - 1.0) * np.log(1.0 - y_val_clip) - betaln(a_post, b_post)
+        p_mean = np.mean(p_post, axis=0)
+        a_mean = np.maximum(p_mean * phi_val, 1e-4)
+        b_mean = np.maximum((1.0 - p_mean) * phi_val, 1e-4)
+        ll_mean = (a_mean - 1.0) * np.log(y_val_clip) + (b_mean - 1.0) * np.log(1.0 - y_val_clip) - betaln(a_mean, b_mean)
+    elif family == "nbinomial":
+        from scipy.special import gammaln
+        rate_post = np.clip(hb_samples[:, obs_idx], 1e-6, 1e8)
+        e_val = exposure_np[obs_idx] if exposure_np is not None else 1.0
+        lam_post = rate_post * e_val
+        r_post = np.asarray(samples["alpha_dispersion"])[:, None]  # shape (S_total, 1)
+        ll = (gammaln(y_obs_val + r_post) - gammaln(y_obs_val + 1.0) - gammaln(r_post)
+              + r_post * (np.log(r_post) - np.log(r_post + lam_post))
+              + y_obs_val * (np.log(lam_post) - np.log(r_post + lam_post)))
+        lam_mean = np.mean(lam_post, axis=0)
+        r_mean = float(np.mean(r_post))
+        ll_mean = (gammaln(y_obs_val + r_mean) - gammaln(y_obs_val + 1.0) - gammaln(r_mean)
+                   + r_mean * (np.log(r_mean) - np.log(r_mean + lam_mean))
+                   + y_obs_val * (np.log(lam_mean) - np.log(r_mean + lam_mean)))
+    elif family == "gamma":
+        from scipy.special import gammaln
+        mu_post = np.clip(hb_samples[:, obs_idx], 1e-6, 1e8)
+        alpha_post = np.asarray(samples["shape_param"])[:, None]  # shape (S_total, 1)
+        rate_post = alpha_post / mu_post
+        ll = (alpha_post * np.log(rate_post) - gammaln(alpha_post)
+              + (alpha_post - 1.0) * np.log(y_obs_val) - rate_post * y_obs_val)
+        mu_mean = np.mean(mu_post, axis=0)
+        alpha_mean = float(np.mean(alpha_post))
+        rate_mean = alpha_mean / mu_mean
+        ll_mean = (alpha_mean * np.log(rate_mean) - gammaln(alpha_mean)
+                   + (alpha_mean - 1.0) * np.log(y_obs_val) - rate_mean * y_obs_val)
     else:
         ll = np.zeros((S_total, len(obs_idx)))
         ll_mean = np.zeros(len(obs_idx))

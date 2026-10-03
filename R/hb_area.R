@@ -4,15 +4,15 @@
 #' @param data Data frame containing area/domain observations.
 #' @param domain Domain identifier column or vector.
 #' @param time Time period identifier (required if temporal != "none").
-#' @param family Likelihood family: "gaussian", "binomial", "poisson", or "beta".
-#' @param spatial Spatial effect structure: "none", "besag", or "bym2".
+#' @param family Likelihood family: "gaussian", "binomial", "poisson", "beta", "nbinomial", or "gamma".
+#' @param spatial Spatial effect structure: "none", "besag", "bym2", "bym", or "leroux".
 #' @param temporal Temporal effect structure: "none", "ar1", "rw1", or "iid".
 #' @param st_interaction Spatio-temporal interaction: "none", "separable", "domain-specific",
 #'   "type1", "type2", "type3", or "type4".
 #' @param W Spatial adjacency matrix (required if spatial != "none").
 #' @param vardir Known direct sampling variances (for Gaussian and Beta).
 #' @param trials Total trials / sample size per area (for Binomial).
-#' @param exposure Expected exposure / offsets (for Poisson).
+#' @param exposure Expected exposure / offsets (for Poisson and Negative Binomial).
 #' @param warmup Number of MCMC warmup iterations (default 500).
 #' @param samples Number of MCMC post-warmup samples (default 1000).
 #' @param chains Number of parallel MCMC chains on GPU (default 2).
@@ -28,8 +28,8 @@ hb_area <- function(
   data,
   domain = NULL,
   time = NULL,
-  family = c("gaussian", "binomial", "poisson", "beta"),
-  spatial = c("none", "besag", "bym2"),
+  family = c("gaussian", "binomial", "poisson", "beta", "nbinomial", "gamma"),
+  spatial = c("none", "besag", "bym2", "bym", "leroux"),
   temporal = c("none", "ar1", "rw1", "iid"),
   st_interaction = c("none", "separable", "domain-specific", "type1", "type2", "type3", "type4"),
   W = NULL,
@@ -45,8 +45,8 @@ hb_area <- function(
   ...
 ) {
   call_matched <- match.call()
-  family <- match.arg(tolower(family), choices = c("gaussian", "binomial", "poisson", "beta"))
-  spatial <- match.arg(tolower(spatial), choices = c("none", "besag", "bym2"))
+  family <- match.arg(tolower(family), choices = c("gaussian", "binomial", "poisson", "beta", "nbinomial", "gamma"))
+  spatial <- match.arg(tolower(spatial), choices = c("none", "besag", "bym2", "bym", "leroux"))
   temporal <- match.arg(tolower(temporal), choices = c("none", "ar1", "rw1", "iid"))
   st_interaction <- match.arg(tolower(st_interaction), choices = c("none", "separable", "domain-specific", "type1", "type2", "type3", "type4"))
   device <- match.arg(tolower(device), choices = c("auto", "metal", "cuda", "cpu"))
@@ -110,6 +110,20 @@ hb_area <- function(
     if (length(y_valid) > 0 && all(y_valid >= 0 & y_valid <= 1) && any(y_valid %% 1 != 0)) {
       cli::cli_alert_info("Response appears to be proportions; converting to integer counts: {.code round(y * trials)}.")
       y <- as.numeric(round(y * trials_vec))
+    }
+  }
+
+  if (family == "gamma") {
+    y_valid <- y[!is.na(y)]
+    if (any(y_valid <= 0)) {
+      cli::cli_abort("For {.code family = 'gamma'}, response variable must be strictly positive (y > 0).")
+    }
+  }
+
+  if (family == "nbinomial") {
+    y_valid <- y[!is.na(y)]
+    if (any(y_valid < 0) || any(y_valid %% 1 != 0)) {
+      cli::cli_abort("For {.code family = 'nbinomial'}, response variable must be non-negative integers.")
     }
   }
 
@@ -196,7 +210,7 @@ hb_area <- function(
     df_hb$trials <- trials_vec
     df_hb$estimated_total <- hb_pred * trials_vec
   }
-  if (!is.null(exposure_vec) && family == "poisson") {
+  if (!is.null(exposure_vec) && family %in% c("poisson", "nbinomial")) {
     df_hb$exposure <- exposure_vec
     df_hb$estimated_count <- hb_pred * exposure_vec
   }
@@ -238,8 +252,13 @@ hb_area <- function(
     hyperpar = hyper_df,
     random_effect_var = fit_py$hyperparameters$sigma2_u %||% NULL,
     random_effect_var_time = fit_py$hyperparameters$sigma2_t %||% NULL,
+    sigma2_spatial = fit_py$hyperparameters$sigma2_spatial %||% NULL,
+    sigma2_iid = fit_py$hyperparameters$sigma2_iid %||% NULL,
     phi = fit_py$hyperparameters$phi %||% NULL,
+    rho_spatial = fit_py$hyperparameters$rho_spatial %||% NULL,
     rho_time = fit_py$hyperparameters$rho_t %||% NULL,
+    alpha_dispersion = fit_py$hyperparameters$alpha_dispersion %||% NULL,
+    shape_param = fit_py$hyperparameters$shape_param %||% NULL,
     goodness = goodness,
     family = family,
     spatial = spatial,

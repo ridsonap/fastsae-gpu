@@ -1,4 +1,7 @@
 library(testthat)
+library(fastsaegpu)
+
+try(reticulate::use_virtualenv("r-numpyro-gpu", required = FALSE), silent = TRUE)
 
 test_that("Spatial weights conversion, ICAR scaling factor, and validation work", {
   D <- 20
@@ -131,3 +134,116 @@ test_that("End-to-end hb_area executes when NumPyro is available", {
   expect_equal(nrow(fit$df_hb), D)
   expect_true(fit$estcoef["(Intercept)", "beta"] > 0)
 })
+
+test_that("Input validation rejects invalid data for gamma and nbinomial", {
+  df_neg <- data.frame(y = c(-1, 2, 3), x = c(1, 2, 3))
+  expect_error(
+    hb_area(y ~ x, data = df_neg, family = "gamma"),
+    "strictly positive"
+  )
+  expect_error(
+    hb_area(y ~ x, data = df_neg, family = "nbinomial"),
+    "non-negative integers"
+  )
+})
+
+test_that("hb_area fits nbinomial and gamma models", {
+  skip_if_not(fastsaegpu::check_numpyro_available(), "NumPyro/JAX not available")
+
+  set.seed(42)
+  D <- 12
+  x <- rnorm(D)
+  exposure <- round(runif(D, 50, 150))
+  # Negative binomial counts
+  mu_nb <- exp(0.5 + 0.3 * x) * exposure
+  y_nb <- rnbinom(D, size = 5, mu = mu_nb)
+  data_nb <- data.frame(y = y_nb, x = x, exposure = exposure)
+
+  fit_nb <- hb_area(
+    y ~ x,
+    data = data_nb,
+    exposure = "exposure",
+    family = "nbinomial",
+    warmup = 100L,
+    samples = 150L,
+    chains = 1L,
+    device = "cpu",
+    print_result = FALSE
+  )
+  expect_s3_class(fit_nb, "fastsae_hb_area")
+  expect_true("alpha_dispersion" %in% fit_nb$hyperpar$Parameter)
+  expect_true(!is.null(fit_nb$df_hb$estimated_count))
+
+  # Gamma positive continuous data
+  mu_gam <- exp(1.0 + 0.4 * x)
+  y_gam <- rgamma(D, shape = 10, rate = 10 / mu_gam)
+  data_gam <- data.frame(y = y_gam, x = x)
+
+  fit_gam <- hb_area(
+    y ~ x,
+    data = data_gam,
+    family = "gamma",
+    warmup = 100L,
+    samples = 150L,
+    chains = 1L,
+    device = "cpu",
+    print_result = FALSE
+  )
+  expect_s3_class(fit_gam, "fastsae_hb_area")
+  expect_true("shape_param" %in% fit_gam$hyperpar$Parameter)
+})
+
+test_that("hb_area fits BYM and Leroux spatial models", {
+  skip_if_not(fastsaegpu::check_numpyro_available(), "NumPyro/JAX not available")
+
+  set.seed(99)
+  D <- 10
+  W <- matrix(0, D, D)
+  for (i in 1:(D - 1)) {
+    W[i, i + 1] <- 1
+    W[i + 1, i] <- 1
+  }
+  dom_names <- paste0("d", 1:D)
+  rownames(W) <- colnames(W) <- dom_names
+  x <- rnorm(D)
+  vardir <- rep(0.1, D)
+  y <- 1.5 + 0.5 * x + rnorm(D, sd = sqrt(vardir))
+  data_sp <- data.frame(domain = dom_names, y = y, x = x, vardir = vardir)
+
+  # BYM
+  fit_bym <- hb_area(
+    y ~ x,
+    data = data_sp,
+    domain = "domain",
+    W = W,
+    spatial = "bym",
+    vardir = "vardir",
+    family = "gaussian",
+    warmup = 100L,
+    samples = 150L,
+    chains = 1L,
+    device = "cpu",
+    print_result = FALSE
+  )
+  expect_s3_class(fit_bym, "fastsae_hb_area")
+  expect_true("sigma2_spatial" %in% fit_bym$hyperpar$Parameter)
+
+  # Leroux
+  fit_leroux <- hb_area(
+    y ~ x,
+    data = data_sp,
+    domain = "domain",
+    W = W,
+    spatial = "leroux",
+    vardir = "vardir",
+    family = "gaussian",
+    warmup = 100L,
+    samples = 150L,
+    chains = 1L,
+    device = "cpu",
+    print_result = FALSE
+  )
+  expect_s3_class(fit_leroux, "fastsae_hb_area")
+  expect_true("rho_spatial" %in% fit_leroux$hyperpar$Parameter)
+})
+

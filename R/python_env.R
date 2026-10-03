@@ -14,6 +14,10 @@ check_numpyro_available <- function(device = "auto") {
     cli::cli_alert_warning("Package {.pkg reticulate} is not installed.")
     return(FALSE)
   }
+
+  if (!reticulate::py_available()) {
+    try(reticulate::use_virtualenv("r-numpyro-gpu", required = FALSE), silent = TRUE)
+  }
   
   has_np <- reticulate::py_module_available("numpyro")
   has_jax <- reticulate::py_module_available("jax")

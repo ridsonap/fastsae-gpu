@@ -11,7 +11,7 @@ suppressPackageStartupMessages({
   }
 })
 
-
+devtools::document()
 devtools::load_all()
 
 # 1. Simulate Spatio-Temporal Data (D = 50, T = 10 -> N = 500)
