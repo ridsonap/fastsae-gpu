@@ -143,14 +143,16 @@ fit_st <- hb_area(
 
 Pengujian empiris dilakukan pada populasi finis tergenerasi ($N \approx 125.000$ individu, $D = 50$ wilayah, 12 kovariat, 4 *outlier shocks*) terhadap **Ground Truth Sejati ($\bar{Y}_d$)**:
 
-| Model SAE | ARB (%) | RRMSE (%) | Relative Efficiency (RE) | RRMSE Outliers | Waktu Komputasi |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **Direct Survey Estimator** | 5.67% | 7.40% | 1.00x *(Baseline)* | 5.66% | Instant |
-| **fastsae (INLA Laplace)** | 5.12% | 6.54% | 1.38x | 12.74% | 1.78s |
-| **Standard HB Area (GPU)** | 4.73% | 6.18% | 1.55x | 13.23% | 13.79s |
-| **HB Area + Horseshoe** | 4.16% | 5.56% | 1.91x | 12.33% | 7.25s |
-| **Best HB Area (Synergy)** | **4.13%** | **5.57%** | **1.94x (Terbaik!)** | 13.61% | 6.99s |
-| **MERF (Machine Learning)** | 4.63% | 5.97% | **1.64x** | **12.07% (Terbaik!)** | **1.58s (Tercepat!)** |
+| Model SAE | Paradigma | ARB (%) | RRMSE (%) | Relative Efficiency (RE) | Waktu Komputasi |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **Direct Survey Estimator** | Survei Langsung | 5.05% | 6.39% | 1.00x *(Baseline)* | Instant |
+| **fastsae (Frequentist EBLUP)** | Frekuentis REML | 5.00% | 6.39% | 1.03x | 0.003s |
+| **fastsae (INLA Laplace)** | Bayes Deterministik | 5.07% | 6.51% | 1.02x | 1.98s |
+| **tipsae (Stan NUTS CPU)** | Bayes MCMC (Stan) | 5.03% | 6.53% | 0.99x | 1.71s |
+| **fastsaegpu (Standard HB)** | Bayes MCMC (GPU) | 5.00% | 6.48% | 1.01x | 18.81s |
+| **fastsaegpu (Best HB Synergy)** | Bayes Sinergi (GPU) | **4.72%** | 6.50% | **1.11x (Tertinggi!)** | 27.73s |
+| **fastsaegpu (Standard MERF)** | Machine Learning | 4.79% | **6.29%** | 1.07x | 0.38s |
+| **fastsaegpu (Enhanced MERF)** | Machine Learning Sinergi | 4.91% | 6.31% | **1.08x** | **0.24s (Tercepat!)** |
 
 > *Skrip dan visualisasi replikasi lengkap tersedia di folder [`benchmarks/`](benchmarks/).*
 
