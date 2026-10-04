@@ -471,4 +471,89 @@ test_that("hb_area advanced features (Horseshoe, Student-t robust, GVF smoothing
   expect_no_error(print(fit_hs))
 })
 
+test_that("hb_area supports two-level nested sub-area SAE models (Torabi & Rao, 2014)", {
+  skip_if_not(check_numpyro_available(), "NumPyro/JAX not available")
+
+  set.seed(42)
+  # 4 Major areas (e.g., provinces)
+  # 5 Sub-areas per major area (total 20 sub-areas, e.g., regencies)
+  n_maj <- 4
+  n_sub_per_maj <- 5
+  N_total <- n_maj * n_sub_per_maj
+
+  prov_id <- paste0("Prov_", rep(1:n_maj, each = n_sub_per_maj))
+  kab_id <- paste0("Kab_", 1:N_total)
+
+  # True province random effects u_j ~ N(0, 0.4^2)
+  u_prov <- rnorm(n_maj, 0, 0.4)
+  # True district random effects v_jk ~ N(0, 0.2^2)
+  v_kab <- rnorm(N_total, 0, 0.2)
+
+  x <- rnorm(N_total)
+  vardir <- rep(0.04, N_total)
+
+  # Data generating process: y_jk = 1.5 + 0.8 * x_jk + u_j + v_jk + e_jk
+  y <- 1.5 + 0.8 * x + u_prov[as.integer(factor(prov_id))] + v_kab + rnorm(N_total, 0, sqrt(vardir))
+
+  df_nested <- data.frame(
+    provinsi = prov_id,
+    kabupaten = kab_id,
+    y = y,
+    x = x,
+    vardir = vardir
+  )
+
+  # 1. Standard specification: domain = "provinsi", subarea = "kabupaten"
+  fit_nested <- hb_area(
+    y ~ x,
+    data = df_nested,
+    domain = "provinsi",
+    subarea = "kabupaten",
+    vardir = "vardir",
+    family = "gaussian",
+    warmup = 100L,
+    samples = 150L,
+    chains = 1L,
+    device = "cpu",
+    print_result = FALSE
+  )
+
+  expect_s3_class(fit_nested, "fastsae_hb_area")
+  expect_true(isTRUE(fit_nested$is_nested))
+  expect_equal(fit_nested$level, "subarea")
+  expect_true("domain" %in% names(fit_nested$df_hb))
+  expect_true("subarea" %in% names(fit_nested$df_hb))
+  expect_equal(nrow(fit_nested$df_hb), N_total)
+
+  # Check hyperparameter estimates: sigma2_u (major area), sigma2_subarea (sub-area), icc_nested
+  expect_true("sigma2_u" %in% fit_nested$hyperpar$Parameter)
+  expect_true("sigma2_subarea" %in% fit_nested$hyperpar$Parameter)
+  expect_true("icc_nested" %in% fit_nested$hyperpar$Parameter)
+
+  icc_val <- fit_nested$hyperpar$Estimate[fit_nested$hyperpar$Parameter == "icc_nested"]
+  expect_true(icc_val > 0 && icc_val < 1)
+
+  # 2. Inverted specification test (auto-swap): domain = "kabupaten", subarea = "provinsi"
+  fit_swap <- hb_area(
+    y ~ x,
+    data = df_nested,
+    domain = "kabupaten",
+    subarea = "provinsi",
+    vardir = "vardir",
+    family = "gaussian",
+    warmup = 80L,
+    samples = 100L,
+    chains = 1L,
+    device = "cpu",
+    print_result = FALSE
+  )
+  expect_true(isTRUE(fit_swap$is_nested))
+  expect_equal(length(unique(fit_swap$df_hb$domain)), n_maj)
+  expect_equal(length(unique(fit_swap$df_hb$subarea)), N_total)
+
+  # 3. Print method handles nested hierarchy cleanly
+  expect_no_error(print(fit_nested))
+})
+
+
 

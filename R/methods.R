@@ -58,6 +58,12 @@ print.fastsae_hb_area <- function(x, ...) {
   cli::cli_text("{.strong Backend}: NumPyro / JAX on {.val {x$device}}")
   cli::cli_text("{.strong Family}: {toupper(x$family)}")
   cli::cli_text("{.strong Spatial}: {toupper(x$spatial)} | {.strong Temporal}: {toupper(x$temporal)} | {.strong Interaction}: {toupper(x$st_interaction)}")
+  if (isTRUE(x$is_nested) && !is.null(x$subarea)) {
+    n_maj <- length(unique(x$df_hb$domain))
+    n_sub <- length(unique(x$df_hb$subarea))
+    icc_str <- if (!is.null(x$icc_nested)) paste0(" | ICC: ", round(x$icc_nested, 4)) else ""
+    cli::cli_text("{.strong Hierarchy}: Two-Level Nested Sub-Area [{n_maj} Major Areas -> {n_sub} Sub-Areas{icc_str}]")
+  }
   if (identical(x$prior_beta, "horseshoe")) {
     cli::cli_text("{.strong Prior Beta}: Horseshoe (Finnish Regularized Sparse Shrinkage)")
   }

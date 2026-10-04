@@ -90,6 +90,8 @@ def fit_numpyro_hb(
     X,
     domain_idx,
     time_idx=None,
+    subarea_idx=None,
+    num_subareas=1,
     vardir=None,
     trials=None,
     exposure=None,
@@ -120,6 +122,7 @@ def fit_numpyro_hb(
     X_jnp = jnp.asarray(X, dtype=jnp.float32)
     domain_jnp = jnp.asarray(domain_idx, dtype=jnp.int32)
     time_jnp = jnp.asarray(time_idx, dtype=jnp.int32) if time_idx is not None else None
+    subarea_jnp = jnp.asarray(subarea_idx, dtype=jnp.int32) if subarea_idx is not None else None
     
     # Missing / unsampled domains mask
     observed_mask = ~np.isnan(y_np)
@@ -273,6 +276,15 @@ def fit_numpyro_hb(
 
         # Total latent linear predictor
         rand_total = u_spatial[domain_jnp]
+
+        # Nested Sub-Area Random Effect (Torabi & Rao, 2014)
+        if subarea_jnp is not None and num_subareas > 1:
+            sigma_sub = numpyro.sample("sigma_subarea", dist.HalfNormal(1.0))
+            z_sub = numpyro.sample("z_subarea", dist_rand.expand([num_subareas]))
+            u_subarea = sigma_sub * z_sub
+            numpyro.deterministic("sigma2_subarea", sigma_sub ** 2)
+            rand_total = rand_total + u_subarea[subarea_jnp]
+
         if time_jnp is not None:
             rand_total = rand_total + u_temporal[time_jnp] + u_st
         else:
@@ -482,6 +494,12 @@ def fit_numpyro_hb(
         hyperparams["nu_degrees_of_freedom"] = float(np.mean(samples["nu_u"]))
     if "tau_horseshoe" in samples:
         hyperparams["tau_horseshoe"] = float(np.mean(samples["tau_horseshoe"]))
+    if "sigma2_subarea" in samples:
+        hyperparams["sigma2_subarea"] = float(np.mean(samples["sigma2_subarea"]))
+        if "sigma2_u" in hyperparams:
+            s2_u = hyperparams["sigma2_u"]
+            s2_sub = hyperparams["sigma2_subarea"]
+            hyperparams["icc_nested"] = float(s2_u / (s2_u + s2_sub + 1e-8))
 
     shrinkage_weights = None
     if "kappa_shrinkage" in samples:

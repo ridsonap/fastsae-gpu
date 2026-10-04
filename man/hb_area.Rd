@@ -8,6 +8,7 @@ hb_area(
   formula,
   data,
   domain = NULL,
+  subarea = NULL,
   time = NULL,
   family = c("gaussian", "binomial", "poisson", "beta", "nbinomial", "gamma"),
   spatial = c("none", "besag", "bym2", "bym", "leroux"),
@@ -40,7 +41,12 @@ hb_area(
 
 \item{data}{Data frame containing area/domain observations.}
 
-\item{domain}{Domain identifier column or vector.}
+\item{domain}{Domain identifier column or vector (major area level when nested).}
+
+\item{subarea}{Optional sub-area identifier column or vector for two-level nested sub-area SAE models (Torabi & Rao, 2014).
+When specified alongside \code{domain}, the model fits nested random effects:
+\eqn{\theta_{jk} = \mathbf{x}_{jk}^\top \boldsymbol{\beta} + u_j + v_{jk}} where \eqn{u_j} is the major area
+(e.g., province) effect and \eqn{v_{jk}} is the sub-area (e.g., district) effect.}
 
 \item{time}{Time period identifier (required if temporal != "none").}
 

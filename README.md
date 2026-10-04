@@ -473,15 +473,16 @@ Pengujian empiris dilakukan pada populasi finis sintetis ($N \approx 150.000$ in
 
 ## 🚀 Peningkatan Kualitas Metodologis SAE Berdasarkan Literatur
 
-Untuk memaksimalkan akurasi estimasi, stabilitas numerik, dan resistensi terhadap anomali data survei dunia nyata, `fastsaegpu` mengintegrasikan tiga inovasi metodologis mutakhir berstandar literatur internasional:
+Untuk memaksimalkan akurasi estimasi, stabilitas numerik, dan resistensi terhadap anomali data survei dunia nyata, `fastsaegpu` mengintegrasikan inovasi metodologis mutakhir berstandar literatur internasional:
 
 ```mermaid
 flowchart LR
-    A["Raw Survey Input\nDirect Estimator y_i\nNoisy vardir_i\nHigh-dim Covariates X"] --> B["Fitur A: GVF Smoothing\n(Wolter 2007)\nStabilisasi Varians Sampel"]
+    A["Raw Survey Input\nDirect Estimator y_jk\nNoisy vardir_jk\nHigh-dim Covariates X"] --> B["Fitur A: GVF Smoothing\n(Wolter 2007)\nStabilisasi Varians Sampel"]
     B --> C["Fitur B: Horseshoe Prior\n(Carvalho et al. 2010)\nPruning 95%+ Noise Covariates"]
-    C --> D["Fitur C: Student-t Effects\n(Bell & Huang 2006)\nResistensi Domain Pencilan (Outliers)"]
-    D --> E["In-Model Benchmarking\nKonsistensi Total Survei & Target Makro"]
-    E --> F["Optimal SAE Estimates\nARB Turun 13.18% -> 11.51%\nRRMSE Turun 39.56% -> 32.14%"]
+    C --> D["Fitur C: Student-t Effects\n(Bell & Huang 2006)\nResistensi Domain Pencilan"]
+    D --> E["Fitur D: Nested Sub-Area\n(Torabi & Rao 2014)\nKluster Wilayah Makro-Mikro"]
+    E --> F["In-Model Benchmarking\nKonsistensi Total Survei & Target Makro"]
+    F --> G["Optimal SAE Estimates\nARB Turun 13.18% -> 11.51%\nRRMSE Turun 39.56% -> 32.14%"]
 ```
 
 ### 1. Fitur A: Generalized Variance Functions (GVF) Smoothing
@@ -507,6 +508,19 @@ flowchart LR
   $$u_i \sim \text{Student-}t(\nu_u, 0, \sigma_u), \quad \nu_u \sim \mathcal{U}(2.5, 30.0)$$
   Restriksi $\nu_u > 2$ menjamin varians teoretis $\text{Var}(u) = \frac{\nu}{\nu - 2}\sigma_u^2$ tetap berhingga dan terdefinisi, sementara ekor tebal melindungi domain biasa dari tarikan pencilan eksternal.
 - **Argumen di `hb_area()`:** `robust = TRUE`.
+
+### 4. Fitur D: Struktur Hierarki Dua Tingkat (Two-Level Nested Sub-Area SAE Model)
+- **Rujukan Literatur:** Torabi & Rao (2014) *Small Area Estimation under a Two-Level Model*, Survey Methodology / J. Multivariate Anal.; Fuller & Goyeneche (1998); Rao & Molina (2015, Bab 8).
+- **Latar Belakang Metodologis:** Dalam administrasi wilayah statistik (seperti BPS Indonesia atau Eurostat), wilayah terbagi secara hierarkis berjenjang (Provinsi $\to$ Kabupaten/Kota atau Wilayah $\to$ Sub-Area). Model area standar mengabaikan struktur kluster induk ini. Model bersarang dua tingkat membagi efek acak menjadi efek makro area $u_j$ (tingkat provinsi) dan efek sub-area bersarang $v_{jk}$ (tingkat kabupaten/kota di dalam provinsi $j$).
+- **Formulasi:**
+  $$\theta_{jk} = \mathbf{x}_{jk}^\top \boldsymbol{\beta} + u_j + v_{jk}$$
+  $$y_{jk} \mid \theta_{jk} \sim \mathcal{N}(\theta_{jk}, \psi_{jk})$$
+  $$u_j \sim \mathcal{N}(0, \sigma_{\text{area}}^2) \quad (\text{efek area makro/provinsi}), \quad v_{jk} \sim \mathcal{N}(0, \sigma_{\text{subarea}}^2) \quad (\text{efek sub-area/kabupaten})$$
+- **Intra-Cluster Correlation (ICC) Diagnostic:**
+  $$\text{ICC}_{\text{nested}} = \frac{\sigma_{\text{area}}^2}{\sigma_{\text{area}}^2 + \sigma_{\text{subarea}}^2}$$
+  Nilai ICC mendekati 1 menandakan variasi lebih dominan dipengaruhi oleh faktor kesamaan provinsi induk, sedangkan nilai mendekati 0 menandakan heterogenitas kuat murni di tingkat kabupaten/kota.
+- **Argumen di `hb_area()`:** Cukup tambahkan `subarea = "kabupaten"` bersama `domain = "provinsi"`.
+  *Catatan Cerdas:* Dilengkapi mekanisme *auto-detection hierarchy*—jika urutan tertukar (`domain = "kabupaten", subarea = "provinsi"`), fungsi secara otomatis memetakan level kardinalitas yang lebih sedikit sebagai area makro dan level yang lebih banyak sebagai sub-area tanpa menimbulkan error!
 
 ---
 
@@ -574,6 +588,21 @@ print(fit_synergy)
 if (!is.null(fit_synergy$gvf)) {
   plot(fit_synergy$gvf)
 }
+
+# 2. Menjalankan Two-Level Nested Sub-Area SAE Model (Torabi & Rao, 2014):
+fit_nested <- hb_area(
+  formula = y ~ x1 + x2,
+  data = data_survey,
+  vardir = "var_direct",
+  domain = "provinsi",      # Area makro tingkat 1 (kluster)
+  subarea = "kabupaten",    # Sub-area bersarang tingkat 2
+  family = "gaussian",
+  device = "auto"
+)
+
+# Output mencakup estimasi sigma2_u, sigma2_subarea, dan Intra-Cluster Correlation (ICC):
+print(fit_nested)
+# > Hierarchy: Two-Level Nested Sub-Area [34 Major Areas -> 514 Sub-Areas | ICC: 0.3821]
 ```
 
 

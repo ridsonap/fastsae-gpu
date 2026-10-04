@@ -61,4 +61,12 @@
     * Comprehensive study across 50 domains, 15 covariates (3 signal, 12 noise), 4 outlier domains, and noisy variances.
     * Demonstrates that Full Synergy (A + B + C + Benchmarking) yields the lowest overall error (ARB 11.51% vs 13.18% direct, RRMSE 32.14% vs 39.56% direct — a 19% relative error reduction).
 
+* Two-Level Nested Sub-Area SAE Model (`subarea`):
+  * Implements the two-level nested hierarchical area model based on Torabi & Rao (2014) *Survey Methodology / JMA*, Fuller & Goyeneche (1998), and Rao & Molina (2015, Chapter 8).
+  * Formulation: $\theta_{jk} = \mathbf{x}_{jk}^\top \boldsymbol{\beta} + u_j + v_{jk}$, where $u_j \sim \mathcal{N}(0, \sigma_{\text{area}}^2)$ is the major area (e.g., province) level effect and $v_{jk} \sim \mathcal{N}(0, \sigma_{\text{subarea}}^2)$ is the nested sub-area (e.g., district/kabupaten) level effect.
+  * Added `subarea` argument to `hb_area()` alongside `domain`.
+  * Intelligent hierarchy auto-detection: compares category cardinalities and gracefully aligns coarser levels to major area and finer levels to subarea.
+  * Estimates hyperparameter `sigma2_subarea` and Intra-Cluster Correlation (ICC) diagnostic: $\text{ICC}_{\text{nested}} = \sigma_{\text{area}}^2 / (\sigma_{\text{area}}^2 + \sigma_{\text{subarea}}^2)$.
+  * Full S3 methods support: `print.fastsaegpu_hb_area()` displays hierarchical levels and ICC.
+
 

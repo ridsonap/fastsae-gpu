@@ -2,7 +2,11 @@
 #'
 #' @param formula Fixed effects model formula (e.g., y ~ x1 + x2).
 #' @param data Data frame containing area/domain observations.
-#' @param domain Domain identifier column or vector.
+#' @param domain Domain identifier column or vector (major area level when nested).
+#' @param subarea Optional sub-area identifier column or vector for two-level nested sub-area SAE models (Torabi & Rao, 2014).
+#'   When specified alongside \code{domain}, the model fits nested random effects:
+#'   \eqn{\theta_{jk} = \mathbf{x}_{jk}^\top \boldsymbol{\beta} + u_j + v_{jk}} where \eqn{u_j} is the major area
+#'   (e.g., province) effect and \eqn{v_{jk}} is the sub-area (e.g., district) effect.
 #' @param time Time period identifier (required if temporal != "none").
 #' @param family Likelihood family: "gaussian", "binomial", "poisson", "beta", "nbinomial", or "gamma".
 #' @param spatial Spatial effect structure: "none", "besag", "bym2", "bym", or "leroux".
@@ -63,6 +67,7 @@ hb_area <- function(
   formula,
   data,
   domain = NULL,
+  subarea = NULL,
   time = NULL,
   family = c("gaussian", "binomial", "poisson", "beta", "nbinomial", "gamma"),
   spatial = c("none", "besag", "bym2", "bym", "leroux"),
@@ -123,19 +128,51 @@ hb_area <- function(
   }
   n_obs <- nrow(data)
 
-  # 1. Domain and Time parsing
+  # 1. Domain, Sub-Area, and Time parsing
+  subarea_raw <- if (!is.null(subarea)) .get_variable(data, subarea) else NULL
   if (is.null(domain)) {
-    if (is.null(time)) {
-      domain_vec <- seq_len(n_obs)
+    if (!is.null(subarea_raw)) {
+      domain_raw <- rep("Area_1", n_obs)
+    } else if (is.null(time)) {
+      domain_raw <- seq_len(n_obs)
     } else {
       cli::cli_abort("When {.arg time} is specified, {.arg domain} must also be specified.")
     }
   } else {
-    domain_vec <- .get_variable(data, domain)
+    domain_raw <- .get_variable(data, domain)
   }
-  unique_domains <- unique(domain_vec)
-  n_domains <- length(unique_domains)
-  domain_idx <- as.integer(factor(domain_vec, levels = unique_domains)) - 1L
+
+  is_nested <- !is.null(subarea_raw)
+  if (is_nested) {
+    u_dom <- length(unique(domain_raw))
+    u_sub <- length(unique(subarea_raw))
+    # Intelligent hierarchy auto-detection: if domain has more levels than subarea, user inverted them
+    if (u_dom > u_sub) {
+      cli::cli_alert_info("Hierarchical subarea detected: auto-mapping {.val {u_sub}} major areas and {.val {u_dom}} subareas.")
+      tmp <- domain_raw
+      domain_raw <- subarea_raw
+      subarea_raw <- tmp
+    }
+    unique_domains <- unique(domain_raw)
+    n_domains <- length(unique_domains)
+    domain_idx <- as.integer(factor(domain_raw, levels = unique_domains)) - 1L
+
+    unique_subareas <- unique(subarea_raw)
+    n_subareas <- length(unique_subareas)
+    subarea_idx <- as.integer(factor(subarea_raw, levels = unique_subareas)) - 1L
+
+    domain_vec <- domain_raw
+    subarea_vec <- subarea_raw
+  } else {
+    unique_domains <- unique(domain_raw)
+    n_domains <- length(unique_domains)
+    domain_idx <- as.integer(factor(domain_raw, levels = unique_domains)) - 1L
+
+    domain_vec <- domain_raw
+    subarea_vec <- NULL
+    subarea_idx <- NULL
+    n_subareas <- 1L
+  }
 
   time_vec <- if (!is.null(time)) .get_variable(data, time) else NULL
   if (temporal != "none" && is.null(time_vec)) {
@@ -261,6 +298,8 @@ hb_area <- function(
     X = X_mat,
     domain_idx = domain_idx,
     time_idx = time_idx,
+    subarea_idx = subarea_idx,
+    num_subareas = as.integer(n_subareas),
     vardir = vardir_vec,
     trials = trials_vec,
     exposure = exposure_vec,
@@ -345,6 +384,9 @@ hb_area <- function(
     random_effect = rand_eff,
     stringsAsFactors = FALSE
   )
+  if (is_nested && !is.null(subarea_vec)) {
+    df_hb$subarea <- subarea_vec
+  }
   if (is_benchmarked) {
     df_hb$hb_unbenchmarked <- hb_pred
     df_hb$sd_unbenchmarked <- hb_sd
@@ -389,6 +431,7 @@ hb_area <- function(
   # Format model string label
   model_label <- paste0("HB-", toupper(family), " (NumPyro GPU)")
   enhancements <- c()
+  if (is_nested) enhancements <- c(enhancements, "Nested Sub-Area")
   if (spatial != "none") enhancements <- c(enhancements, toupper(spatial))
   if (temporal != "none") enhancements <- c(enhancements, toupper(temporal))
   if (st_interaction != "none") enhancements <- c(enhancements, paste0("ST:", toupper(st_interaction)))
@@ -409,6 +452,8 @@ hb_area <- function(
     random_effect_var_time = fit_py$hyperparameters$sigma2_t %||% NULL,
     sigma2_spatial = fit_py$hyperparameters$sigma2_spatial %||% NULL,
     sigma2_iid = fit_py$hyperparameters$sigma2_iid %||% NULL,
+    sigma2_subarea = fit_py$hyperparameters$sigma2_subarea %||% NULL,
+    icc_nested = fit_py$hyperparameters$icc_nested %||% NULL,
     phi = fit_py$hyperparameters$phi %||% NULL,
     rho_spatial = fit_py$hyperparameters$rho_spatial %||% NULL,
     rho_time = fit_py$hyperparameters$rho_t %||% NULL,
@@ -419,7 +464,7 @@ hb_area <- function(
     spatial = spatial,
     temporal = temporal,
     st_interaction = st_interaction,
-    level = "area",
+    level = if (is_nested) "subarea" else "area",
     model = model_label,
     device = fit_py$device_used,
     elapsed_seconds = elapsed,
@@ -436,6 +481,8 @@ hb_area <- function(
     smooth_vardir = isTRUE(smooth_vardir),
     gvf = gvf_obj,
     shrinkage_weights = fit_py$shrinkage_weights,
+    subarea = if (is_nested) subarea_vec else NULL,
+    is_nested = is_nested,
     data = data,
     call = call_matched
   )
