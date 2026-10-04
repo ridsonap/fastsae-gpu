@@ -38,10 +38,9 @@
   * Demonstrates exact statistical equivalence with state-of-the-art implementations (RRMSE 3.36% non-spatial, 3.10% spatial; CP95 93-94%; Pearson $r > 0.957$ and $r > 0.971$).
   * Fully documented with structured datasets (`simulation_summary.csv`, `simulation_domain_estimates.csv`) and 300 DPI publication-quality visualizations (`simulation_accuracy_comparison.png`, `simulation_runtime_comparison.png`).
 
-* Benchmarking & Calibration module added (`benchmark()`, `benchmark_sae()`):
-  * Provides calibration of small area model estimates to guarantee coherence with aggregate totals (such as national or regional benchmarks).
-  * Supports **Self-Benchmarking** (`target = NULL`): calibrates model estimates so that their weighted sum matches the direct sample survey total exactly.
-  * Supports **External Benchmarking** (`target = value`): aligns model estimates with known external benchmarks (e.g., census figures or official registry administrative data).
+* Benchmarking & Calibration module added:
+  * **In-Model Benchmarking in `hb_area(..., benchmark = TRUE)`:** Integrates Self-Benchmarking and External Benchmarking directly into the MCMC trace sampling on GPU NumPyro/JAX. Every MCMC sample draw is calibrated, providing exact Bayesian posterior distributions, posterior SDs, and 95% credible intervals under the benchmarking constraint without post-hoc approximations.
+  * **Post-Hoc Benchmarking via `benchmark()` & `benchmark_sae()`:** Provides calibration of existing fitted models to guarantee aggregate coherence with survey direct totals (`target = NULL`) or known administrative targets (`target = value`).
   * Offers 4 calibration methods: `"logit"` (bounds estimates strictly in (0, 1) for Beta/Binomial models), `"optimal"` (MSE-weighted quadratic calibration), `"ratio"` (proportional scaling), and `"difference"` (additive shift).
   * Full S3 methods: `print()`, `summary()`, and `plot()` with ggplot2 diagnostic visualization.
   * Empirically validated on finite population simulation: external benchmarking eliminates aggregate national bias to 0.0000% and reduces both domain-level Absolute Relative Bias (ARB) and RRMSE.

@@ -18,6 +18,10 @@ hb_area(
   vardir = NULL,
   trials = NULL,
   exposure = NULL,
+  benchmark = FALSE,
+  benchmark_weights = NULL,
+  benchmark_target = NULL,
+  benchmark_method = c("logit", "optimal", "ratio", "difference"),
   warmup = 500L,
   samples = 1000L,
   chains = 2L,
@@ -52,6 +56,15 @@ hb_area(
 \item{trials}{Total trials / sample size per area (for Binomial).}
 
 \item{exposure}{Expected exposure / offsets (for Poisson and Negative Binomial).}
+
+\item{benchmark}{Logical: whether to enable in-model self-benchmarking or calibration (default FALSE).}
+
+\item{benchmark_weights}{Survey or population weights vector, or column name in \code{data}.}
+
+\item{benchmark_target}{Target benchmark value. If NULL (default), performs self-benchmarking
+using the survey-weighted direct total.}
+
+\item{benchmark_method}{Calibration method: "logit", "optimal", "ratio", or "difference".}
 
 \item{warmup}{Number of MCMC warmup iterations (default 500).}
 

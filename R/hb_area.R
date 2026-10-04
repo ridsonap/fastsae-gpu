@@ -13,6 +13,11 @@
 #' @param vardir Known direct sampling variances (for Gaussian and Beta).
 #' @param trials Total trials / sample size per area (for Binomial).
 #' @param exposure Expected exposure / offsets (for Poisson and Negative Binomial).
+#' @param benchmark Logical: whether to enable in-model self-benchmarking or calibration (default FALSE).
+#' @param benchmark_weights Survey or population weights vector, or column name in \code{data}.
+#' @param benchmark_target Target benchmark value. If NULL (default), performs self-benchmarking
+#'   using the survey-weighted direct total.
+#' @param benchmark_method Calibration method: "logit", "optimal", "ratio", or "difference".
 #' @param warmup Number of MCMC warmup iterations (default 500).
 #' @param samples Number of MCMC post-warmup samples (default 1000).
 #' @param chains Number of parallel MCMC chains on GPU (default 2).
@@ -59,6 +64,10 @@ hb_area <- function(
   vardir = NULL,
   trials = NULL,
   exposure = NULL,
+  benchmark = FALSE,
+  benchmark_weights = NULL,
+  benchmark_target = NULL,
+  benchmark_method = c("logit", "optimal", "ratio", "difference"),
   warmup = 500L,
   samples = 1000L,
   chains = 2L,
@@ -73,6 +82,7 @@ hb_area <- function(
   temporal <- match.arg(tolower(temporal), choices = c("none", "ar1", "rw1", "iid"))
   st_interaction <- match.arg(tolower(st_interaction), choices = c("none", "separable", "domain-specific", "type1", "type2", "type3", "type4"))
   device <- match.arg(tolower(device), choices = c("auto", "metal", "cuda", "cpu"))
+  benchmark_method <- match.arg(tolower(benchmark_method), choices = c("logit", "optimal", "ratio", "difference"))
 
   # Automatically configure JAX backend platform before python initializes
   old_plat <- Sys.getenv("JAX_PLATFORMS", unset = NA)
@@ -188,6 +198,23 @@ hb_area <- function(
     W_obj <- .convert_spatial_weights(W, n_domains = n_domains, domain_names = unique_domains)
   }
 
+  # 3b. Benchmark weights parsing
+  bm_weights_vec <- NULL
+  if (isTRUE(benchmark)) {
+    if (!is.null(benchmark_weights)) {
+      bm_weights_vec <- as.numeric(.get_variable(data, benchmark_weights))
+    } else {
+      candidates <- c("weights", "weight", "w", "pop", "population", "pop_weights")
+      found <- intersect(candidates, names(data))
+      if (length(found) > 0) {
+        cli::cli_alert_info("Using column {.val {found[1]}} as benchmark weights.")
+        bm_weights_vec <- as.numeric(data[[found[1]]])
+      } else {
+        cli::cli_abort("When {.code benchmark = TRUE}, {.arg benchmark_weights} must be provided or present in {.arg data}.")
+      }
+    }
+  }
+
   # 4. Invoke NumPyro Python Backend
   backend <- .get_numpyro_backend(device = device)
   
@@ -214,7 +241,11 @@ hb_area <- function(
     num_samples = as.integer(samples),
     num_chains = as.integer(chains),
     device = device,
-    seed = as.integer(seed)
+    seed = as.integer(seed),
+    benchmark = isTRUE(benchmark),
+    benchmark_weights = bm_weights_vec,
+    benchmark_target = if (!is.null(benchmark_target)) as.numeric(benchmark_target) else NULL,
+    benchmark_method = benchmark_method
   )
   elapsed <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
   cli::cli_alert_success("Sampling completed in {round(elapsed, 2)} seconds.")
@@ -242,19 +273,36 @@ hb_area <- function(
   linpred <- as.numeric(fit_py$linpred_mean)
   rand_eff <- as.numeric(fit_py$rand_eff_mean)
 
+  is_benchmarked <- isTRUE(fit_py$benchmarked)
+  if (is_benchmarked && !is.null(fit_py$hb_bench_mean)) {
+    hb_final <- as.numeric(fit_py$hb_bench_mean)
+    sd_final <- as.numeric(fit_py$hb_bench_sd)
+    ci_lower_final <- as.numeric(fit_py$hb_ci_lower_bench)
+    ci_upper_final <- as.numeric(fit_py$hb_ci_upper_bench)
+  } else {
+    hb_final <- hb_pred
+    sd_final <- hb_sd
+    ci_lower_final <- hb_ci_lower
+    ci_upper_final <- hb_ci_upper
+  }
+
   df_hb <- data.frame(
     domain = domain_vec,
     y = y_raw,
-    hb = hb_pred,
+    hb = hb_final,
     linear_pred = linpred,
-    sd = hb_sd,
-    mse = hb_sd^2,
-    rse = ifelse(abs(hb_pred) < 1e-8, NA_real_, (hb_sd / abs(hb_pred)) * 100),
-    ci_lower = hb_ci_lower,
-    ci_upper = hb_ci_upper,
+    sd = sd_final,
+    mse = sd_final^2,
+    rse = ifelse(abs(hb_final) < 1e-8, NA_real_, (sd_final / abs(hb_final)) * 100),
+    ci_lower = ci_lower_final,
+    ci_upper = ci_upper_final,
     random_effect = rand_eff,
     stringsAsFactors = FALSE
   )
+  if (is_benchmarked) {
+    df_hb$hb_unbenchmarked <- hb_pred
+    df_hb$sd_unbenchmarked <- hb_sd
+  }
   if (!is.null(time_vec)) {
     df_hb$time <- time_vec
   }
@@ -324,6 +372,13 @@ hb_area <- function(
     device = fit_py$device_used,
     elapsed_seconds = elapsed,
     convergence = TRUE,
+    benchmarked = is_benchmarked,
+    benchmark_info = if (is_benchmarked) list(
+      target = as.numeric(fit_py$benchmark_target),
+      method = as.character(fit_py$benchmark_method),
+      weights = bm_weights_vec,
+      type = if (is.null(benchmark_target)) "self" else "external"
+    ) else NULL,
     data = data,
     call = call_matched
   )

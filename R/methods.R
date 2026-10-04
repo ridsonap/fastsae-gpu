@@ -58,6 +58,10 @@ print.fastsae_hb_area <- function(x, ...) {
   cli::cli_text("{.strong Backend}: NumPyro / JAX on {.val {x$device}}")
   cli::cli_text("{.strong Family}: {toupper(x$family)}")
   cli::cli_text("{.strong Spatial}: {toupper(x$spatial)} | {.strong Temporal}: {toupper(x$temporal)} | {.strong Interaction}: {toupper(x$st_interaction)}")
+  if (isTRUE(x$benchmarked) && !is.null(x$benchmark_info)) {
+    type_str <- if (x$benchmark_info$type == "self") "Self-Benchmarking (Direct Survey)" else "External Benchmarking"
+    cli::cli_text("{.strong Benchmarking}: ACTIVE [{type_str} | Method: {toupper(x$benchmark_info$method)} | Target: {round(x$benchmark_info$target, 5)}]")
+  }
   
   if (!is.null(x$estcoef)) {
     cli::cli_h2("Regression Coefficients:")
@@ -156,7 +160,6 @@ residuals.fastsae_hb_area <- function(object, ...) {
 #' @name fastsaegpu_benchmark-methods
 NULL
 
-#' @rdname fastsaegpu_benchmark-methods
 #' @rdname fastsaegpu_benchmark-methods
 #' @export
 print.fastsaegpu_benchmark <- function(x, ...) {

@@ -409,22 +409,44 @@ Paket `fastsaegpu` menyediakan fungsi `benchmark()` / `benchmark_sae()` berkiner
 
 ### 💻 Contoh Penggunaan di R
 
+`fastsaegpu` menyediakan dua alur kerja kalibrasi yang fleksibel:
+
+#### 1. In-Model Self-Benchmarking (Terintegrasi Langsung saat MCMC Sampling)
+Estimasi di-benchmark langsung pada setiap draw MCMC di GPU NumPyro, sehingga posterior standard deviation (MSE) dan interval kredibel 95% secara simultan mencerminkan restriksi benchmarking:
+
 ```r
 library(fastsaegpu)
 
-# 1. Fitting Model Bayesian Area
+# Self-Benchmarking langsung di dalam model:
+fit_sb <- hb_area(
+  y ~ x1 + x2 + x3, 
+  data = data_survey, 
+  vardir = "var_y", 
+  family = "beta",
+  benchmark = TRUE,                  # <-- Aktifkan in-model benchmarking!
+  benchmark_weights = "pop_weights", # Kolom bobot populasi/survei
+  benchmark_method = "logit"         # Menjamin seluruh draw strictly (0, 1)
+)
+
+print(fit_sb)
+# Kolom df_hb$hb langsung berisi estimasi benchmarked terkalibrasi
+# Kolom df_hb$hb_unbenchmarked tetap tersimpan untuk perbandingan
+```
+
+#### 2. Post-Hoc Benchmarking (Kalibrasi Pasca-Estimasi)
+Jika model sudah di-fit sebelumnya tanpa restriksi, gunakan fungsi generik `benchmark()`:
+
+```r
+# Fitting awal
 fit <- hb_area(y ~ x1 + x2 + x3, data = data_survey, vardir = "var_y", family = "beta")
 
-# 2. Self-Benchmarking (Kalibrasi Konsistensi Internal Survei)
+# Self-Benchmarking (konsistensi survei langsung)
 bm_self <- benchmark(fit, weights = data_survey$pop_weights, method = "logit")
 print(bm_self)
 summary(bm_self)
 
-# 3. External Benchmarking (Kalibrasi ke Angka Patokan Sensus Nasional = 0.285)
-bm_ext <- benchmark(fit, target = 0.285, weights = data_survey$pop_weights, method = "logit")
-print(bm_ext)
-
-# 4. Visualisasi Kalibrasi (Original vs Benchmarked)
+# External Benchmarking (target sensus resmi = 0.2854)
+bm_ext <- benchmark(fit, target = 0.2854, weights = data_survey$pop_weights, method = "logit")
 plot(bm_ext)
 ```
 

@@ -105,7 +105,11 @@ def fit_numpyro_hb(
     num_samples=1000,
     num_chains=2,
     device="auto",
-    seed=42
+    seed=42,
+    benchmark=False,
+    benchmark_weights=None,
+    benchmark_target=None,
+    benchmark_method="logit"
 ):
     jax, jnp, numpyro, dist, MCMC, NUTS, init_to_median, dev_str = init_jax_environment(device)
 
@@ -361,6 +365,62 @@ def fit_numpyro_hb(
     hb_ci_lower = np.percentile(hb_samples, 2.5, axis=0).tolist()
     hb_ci_upper = np.percentile(hb_samples, 97.5, axis=0).tolist()
 
+    # In-Model Benchmark / Calibration across MCMC sample draws
+    benchmarked = False
+    hb_bench_mean = None
+    hb_bench_sd = None
+    hb_bench_ci_lower = None
+    hb_bench_ci_upper = None
+    actual_target = None
+    used_method = str(benchmark_method).lower() if benchmark_method is not None else "logit"
+
+    if benchmark and benchmark_weights is not None:
+        benchmarked = True
+        w = np.asarray(benchmark_weights, dtype=np.float64)
+        sum_w = np.sum(w)
+        w_norm = (w / sum_w) if sum_w > 0 else (np.ones(N) / N)
+
+        if benchmark_target is not None:
+            actual_target = float(benchmark_target)
+        else:
+            # Self-benchmarking: direct survey weighted aggregate
+            actual_target = float(np.sum(w_norm * y_np))
+
+        if used_method == "logit":
+            p_clip = np.clip(hb_samples, 1e-7, 1.0 - 1e-7)
+            logit_s = np.log(p_clip / (1.0 - p_clip))
+            delta = np.zeros(hb_samples.shape[0], dtype=np.float64)
+            for _ in range(15):
+                cur = 1.0 / (1.0 + np.exp(-(logit_s + delta[:, None])))
+                f = np.sum(cur * w_norm[None, :], axis=1) - actual_target
+                df = np.sum(cur * (1.0 - cur) * w_norm[None, :], axis=1)
+                step = f / np.maximum(df, 1e-9)
+                delta -= step
+                if np.max(np.abs(f)) < 1e-8:
+                    break
+            hb_bench_samples = 1.0 / (1.0 + np.exp(-(logit_s + delta[:, None])))
+        elif used_method == "optimal":
+            psi = vardir_np if vardir_np is not None else np.var(hb_samples, axis=0)
+            denom = np.sum((w_norm ** 2) * psi)
+            if denom > 1e-9:
+                agg_s = np.sum(hb_samples * w_norm[None, :], axis=1, keepdims=True)
+                lambda_s = (actual_target - agg_s) / denom
+                hb_bench_samples = hb_samples + lambda_s * (w_norm[None, :] * psi[None, :])
+            else:
+                agg_s = np.sum(hb_samples * w_norm[None, :], axis=1, keepdims=True)
+                hb_bench_samples = hb_samples * (actual_target / np.maximum(agg_s, 1e-8))
+        elif used_method == "difference":
+            agg_s = np.sum(hb_samples * w_norm[None, :], axis=1, keepdims=True)
+            hb_bench_samples = hb_samples + (actual_target - agg_s)
+        else:  # ratio
+            agg_s = np.sum(hb_samples * w_norm[None, :], axis=1, keepdims=True)
+            hb_bench_samples = hb_samples * (actual_target / np.maximum(agg_s, 1e-8))
+
+        hb_bench_mean = np.mean(hb_bench_samples, axis=0).tolist()
+        hb_bench_sd = np.std(hb_bench_samples, axis=0).tolist()
+        hb_bench_ci_lower = np.percentile(hb_bench_samples, 2.5, axis=0).tolist()
+        hb_bench_ci_upper = np.percentile(hb_bench_samples, 97.5, axis=0).tolist()
+
     linpred_samples = np.asarray(samples["linear_pred"])
     linpred_mean = np.mean(linpred_samples, axis=0).tolist()
 
@@ -486,5 +546,12 @@ def fit_numpyro_hb(
         "p_waic": p_waic,
         "dic": dic,
         "p_dic": p_d,
-        "device_used": dev_str
+        "device_used": dev_str,
+        "benchmarked": benchmarked,
+        "benchmark_target": actual_target,
+        "benchmark_method": used_method if benchmarked else None,
+        "hb_bench_mean": hb_bench_mean,
+        "hb_bench_sd": hb_bench_sd,
+        "hb_ci_lower_bench": hb_bench_ci_lower,
+        "hb_ci_upper_bench": hb_bench_ci_upper
     }

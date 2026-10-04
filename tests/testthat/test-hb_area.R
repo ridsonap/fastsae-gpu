@@ -322,3 +322,67 @@ test_that("hb_area fits BYM and Leroux spatial models", {
   expect_s3_class(fit_leroux, "fastsae_hb_area")
   expect_true("rho_spatial" %in% fit_leroux$hyperpar$Parameter)
 })
+
+test_that("hb_area in-model self-benchmarking and external benchmarking work accurately", {
+  skip_if_not(check_numpyro_available(), "NumPyro/JAX not available")
+
+  set.seed(42)
+  D <- 10
+  x <- rnorm(D)
+  vardir <- rep(0.01, D)
+  p_true <- 1 / (1 + exp(-(0.5 + 0.8 * x)))
+  y <- pmin(pmax(p_true + rnorm(D, sd = sqrt(vardir)), 0.05), 0.95)
+  weights <- runif(D, 50, 150)
+  df <- data.frame(y = y, x = x, vardir = vardir, pop_w = weights)
+
+  # 1. In-model Self-Benchmarking
+  fit_self <- hb_area(
+    y ~ x,
+    data = df,
+    vardir = "vardir",
+    family = "beta",
+    benchmark = TRUE,
+    benchmark_weights = "pop_w",
+    benchmark_method = "logit",
+    warmup = 80L,
+    samples = 120L,
+    chains = 1L,
+    device = "cpu",
+    print_result = FALSE
+  )
+
+  expect_s3_class(fit_self, "fastsae_hb_area")
+  expect_true(isTRUE(fit_self$benchmarked))
+  expect_equal(fit_self$benchmark_info$type, "self")
+  expect_true("hb_unbenchmarked" %in% names(fit_self$df_hb))
+  expect_true("sd_unbenchmarked" %in% names(fit_self$df_hb))
+
+  w_norm <- weights / sum(weights)
+  direct_agg <- sum(w_norm * y)
+  hb_self_agg <- sum(w_norm * fit_self$df_hb$hb)
+  expect_equal(hb_self_agg, direct_agg, tolerance = 1e-5)
+
+  # 2. In-model External Benchmarking
+  ext_target <- 0.65
+  fit_ext <- hb_area(
+    y ~ x,
+    data = df,
+    vardir = "vardir",
+    family = "beta",
+    benchmark = TRUE,
+    benchmark_weights = "pop_w",
+    benchmark_target = ext_target,
+    benchmark_method = "logit",
+    warmup = 80L,
+    samples = 120L,
+    chains = 1L,
+    device = "cpu",
+    print_result = FALSE
+  )
+
+  expect_true(isTRUE(fit_ext$benchmarked))
+  expect_equal(fit_ext$benchmark_info$type, "external")
+  hb_ext_agg <- sum(w_norm * fit_ext$df_hb$hb)
+  expect_equal(hb_ext_agg, ext_target, tolerance = 1e-5)
+})
+
