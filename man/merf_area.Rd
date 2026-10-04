@@ -15,6 +15,11 @@ merf_area(
   num_trees = 500,
   mtry = NULL,
   min_node_size = 5,
+  weighted = TRUE,
+  use_oob = TRUE,
+  feature_screening = FALSE,
+  importance_threshold = 0,
+  tune_params = FALSE,
   max_iter = 25,
   tol = 0.001,
   mse_type = c("bootstrap", "none"),
@@ -54,6 +59,27 @@ Default is \code{max(1, floor(sqrt(ncol(X))))}.}
 
 \item{min_node_size}{Minimum size of terminal nodes (default: 5).}
 
+\item{weighted}{Logical; if \code{TRUE} (default), uses inverse-variance
+precision case weights (\eqn{w_i \propto 1 / (\sigma_u^2 + \psi_i)}) during
+Random Forest tree splitting to prioritize areas with higher survey precision.}
+
+\item{use_oob}{Logical; if \code{TRUE} (default), computes Out-Of-Bag (OOB)
+residuals (\eqn{r_i^{\text{OOB}} = y_i - \hat{f}_{\text{OOB}}(\mathbf{x}_i)})
+during EM iterations to prevent artificial shrinkage of area random effect
+variance \eqn{\sigma_u^2} (Krennmair & Schmid, 2022).}
+
+\item{feature_screening}{Logical; if \code{TRUE}, performs automated noise
+covariate pruning based on permutation importance after initial EM
+iterations (default: \code{FALSE}).}
+
+\item{importance_threshold}{Numeric threshold for feature screening
+(default: \code{0.0}). Covariates with permutation importance \eqn{\le}
+threshold are pruned.}
+
+\item{tune_params}{Logical; if \code{TRUE}, performs fast grid search for
+optimal \code{mtry} and \code{min_node_size} via minimum OOB prediction
+error on the initial response (default: \code{FALSE}).}
+
 \item{max_iter}{Maximum number of EM iterations (default: 25).}
 
 \item{tol}{Convergence tolerance for the random effects vector
@@ -89,6 +115,7 @@ An object of class \code{fastsaegpu_merf} containing:
   \item{hyperparams}{List containing \code{sigma2_u}, \code{loglik},
     \code{iterations}, \code{converged}, and nested variance if applicable.}
   \item{importance}{Named vector of variable importance scores.}
+  \item{selected_vars}{Character vector of active covariates retained after screening.}
   \item{forest}{The final fitted Random Forest object.}
   \item{is_nested}{Logical indicating whether two-level nested structure was used.}
   \item{is_spatial}{Logical indicating whether spatial structure was used.}
@@ -97,11 +124,29 @@ An object of class \code{fastsaegpu_merf} containing:
 }
 }
 \description{
-Fits a Mixed Effects Random Forest (MERF) model for area-level Small Area
-Estimation based on Krennmair & Schmid (2022), Hajjem et al. (2014), and
-Bukhari et al. (2025). The linear fixed-effects component of the classical
+Fits an enhanced Mixed Effects Random Forest (MERF) model for area-level
+Small Area Estimation based on Krennmair & Schmid (2022), Hajjem et al. (2014),
+and Bukhari et al. (2025). The linear fixed-effects component of the classical
 Fay-Herriot model is replaced by a flexible non-parametric Random Forest,
 while preserving area-level random effects and sampling error variance.
+}
+\details{
+Enhanced methodological features:
+\itemize{
+  \item \strong{Precision-Weighted Tree Splitting}: Prioritizes splits on areas
+    with higher survey precision using inverse-variance weights (\eqn{w_i \propto 1 / (\sigma_u^2 + \psi_i)}).
+  \item \strong{Out-of-Bag (OOB) Residuals in EM Loop}: Uses honest OOB predictions
+    during EM iterations to eliminate in-sample overfitting and prevent artificial
+    shrinkage of area random effect variance \eqn{\sigma_u^2}.
+  \item \strong{Automated Feature Screening}: Prunes noise covariates based on
+    permutation importance thresholding.
+  \item \strong{Hyperparameter Auto-Tuning}: Grid-searches optimal \code{mtry}
+    and \code{min_node_size} via minimum OOB prediction error.
+  \item \strong{Parametric Bootstrap MSE}: Computes empirical bootstrap MSE, RSE,
+    and 95\% confidence intervals (Krennmair & Schmid, 2022).
+  \item \strong{Two-Level Nested & Spatial Extensions}: Supports nested sub-areas
+    (Torabi & Rao, 2014) and spatial autoregressive SAR correlation.
+}
 }
 \examples{
 \donttest{
@@ -122,12 +167,14 @@ df <- data.frame(
   x2 = x2
 )
 
-# Fit MERF Area Model
+# Fit MERF Area Model with precision weighting and OOB residuals
 fit_rf <- merf_area(
   formula = y ~ x1 + x2,
   data = df,
   vardir = "vardir",
   domain = "domain",
+  weighted = TRUE,
+  use_oob = TRUE,
   num_trees = 100,
   mse_type = "none",
   seed = 123

@@ -15,6 +15,7 @@
 \alias{coef.fastsaegpu_merf}
 \alias{fitted.fastsaegpu_merf}
 \alias{residuals.fastsaegpu_merf}
+\alias{predict.fastsaegpu_merf}
 \title{Methods for fastsae_hb_area objects}
 \usage{
 \method{print}{fastsae_hb_area}(x, ...)
@@ -42,6 +43,8 @@
 \method{fitted}{fastsaegpu_merf}(object, ...)
 
 \method{residuals}{fastsaegpu_merf}(object, ...)
+
+\method{predict}{fastsaegpu_merf}(object, newdata = NULL, ...)
 }
 \arguments{
 \item{x, object}{An object of class \code{fastsae_hb_area} or \code{summary.fastsae_hb_area}.}
@@ -49,6 +52,8 @@
 \item{...}{Additional arguments passed to specific methods.}
 
 \item{type}{Character specifying plot type: \code{"importance"} (variable importance bar plot) or \code{"estimates"} (scatter of direct vs MERF estimates).}
+
+\item{newdata}{Optional data frame containing new covariates for out-of-sample synthetic prediction.}
 }
 \value{
 \itemize{

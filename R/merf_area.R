@@ -1,10 +1,27 @@
 #' Mixed Effects Random Forest Small Area Estimation (MERF / FH-RF)
 #'
-#' Fits a Mixed Effects Random Forest (MERF) model for area-level Small Area
-#' Estimation based on Krennmair & Schmid (2022), Hajjem et al. (2014), and
-#' Bukhari et al. (2025). The linear fixed-effects component of the classical
+#' Fits an enhanced Mixed Effects Random Forest (MERF) model for area-level
+#' Small Area Estimation based on Krennmair & Schmid (2022), Hajjem et al. (2014),
+#' and Bukhari et al. (2025). The linear fixed-effects component of the classical
 #' Fay-Herriot model is replaced by a flexible non-parametric Random Forest,
 #' while preserving area-level random effects and sampling error variance.
+#'
+#' Enhanced methodological features:
+#' \itemize{
+#'   \item \strong{Precision-Weighted Tree Splitting}: Prioritizes splits on areas
+#'     with higher survey precision using inverse-variance weights (\eqn{w_i \propto 1 / (\sigma_u^2 + \psi_i)}).
+#'   \item \strong{Out-of-Bag (OOB) Residuals in EM Loop}: Uses honest OOB predictions
+#'     during EM iterations to eliminate in-sample overfitting and prevent artificial
+#'     shrinkage of area random effect variance \eqn{\sigma_u^2}.
+#'   \item \strong{Automated Feature Screening}: Prunes noise covariates based on
+#'     permutation importance thresholding.
+#'   \item \strong{Hyperparameter Auto-Tuning}: Grid-searches optimal \code{mtry}
+#'     and \code{min_node_size} via minimum OOB prediction error.
+#'   \item \strong{Parametric Bootstrap MSE}: Computes empirical bootstrap MSE, RSE,
+#'     and 95\% confidence intervals (Krennmair & Schmid, 2022).
+#'   \item \strong{Two-Level Nested & Spatial Extensions}: Supports nested sub-areas
+#'     (Torabi & Rao, 2014) and spatial autoregressive SAR correlation.
+#' }
 #'
 #' @param formula Object of class \code{formula} describing the relationship
 #'   between the direct survey estimate and auxiliary covariates.
@@ -23,6 +40,22 @@
 #' @param mtry Number of variables randomly sampled as candidates at each split.
 #'   Default is \code{max(1, floor(sqrt(ncol(X))))}.
 #' @param min_node_size Minimum size of terminal nodes (default: 5).
+#' @param weighted Logical; if \code{TRUE} (default), uses inverse-variance
+#'   precision case weights (\eqn{w_i \propto 1 / (\sigma_u^2 + \psi_i)}) during
+#'   Random Forest tree splitting to prioritize areas with higher survey precision.
+#' @param use_oob Logical; if \code{TRUE} (default), computes Out-Of-Bag (OOB)
+#'   residuals (\eqn{r_i^{\text{OOB}} = y_i - \hat{f}_{\text{OOB}}(\mathbf{x}_i)})
+#'   during EM iterations to prevent artificial shrinkage of area random effect
+#'   variance \eqn{\sigma_u^2} (Krennmair & Schmid, 2022).
+#' @param feature_screening Logical; if \code{TRUE}, performs automated noise
+#'   covariate pruning based on permutation importance after initial EM
+#'   iterations (default: \code{FALSE}).
+#' @param importance_threshold Numeric threshold for feature screening
+#'   (default: \code{0.0}). Covariates with permutation importance \eqn{\le}
+#'   threshold are pruned.
+#' @param tune_params Logical; if \code{TRUE}, performs fast grid search for
+#'   optimal \code{mtry} and \code{min_node_size} via minimum OOB prediction
+#'   error on the initial response (default: \code{FALSE}).
 #' @param max_iter Maximum number of EM iterations (default: 25).
 #' @param tol Convergence tolerance for the random effects vector
 #'   (default: \code{1e-3}).
@@ -48,6 +81,7 @@
 #'   \item{hyperparams}{List containing \code{sigma2_u}, \code{loglik},
 #'     \code{iterations}, \code{converged}, and nested variance if applicable.}
 #'   \item{importance}{Named vector of variable importance scores.}
+#'   \item{selected_vars}{Character vector of active covariates retained after screening.}
 #'   \item{forest}{The final fitted Random Forest object.}
 #'   \item{is_nested}{Logical indicating whether two-level nested structure was used.}
 #'   \item{is_spatial}{Logical indicating whether spatial structure was used.}
@@ -91,12 +125,14 @@
 #'   x2 = x2
 #' )
 #'
-#' # Fit MERF Area Model
+#' # Fit MERF Area Model with precision weighting and OOB residuals
 #' fit_rf <- merf_area(
 #'   formula = y ~ x1 + x2,
 #'   data = df,
 #'   vardir = "vardir",
 #'   domain = "domain",
+#'   weighted = TRUE,
+#'   use_oob = TRUE,
 #'   num_trees = 100,
 #'   mse_type = "none",
 #'   seed = 123
@@ -114,6 +150,11 @@ merf_area <- function(formula,
                       num_trees = 500,
                       mtry = NULL,
                       min_node_size = 5,
+                      weighted = TRUE,
+                      use_oob = TRUE,
+                      feature_screening = FALSE,
+                      importance_threshold = 0.0,
+                      tune_params = FALSE,
                       max_iter = 25,
                       tol = 1e-3,
                       mse_type = c("bootstrap", "none"),
@@ -156,10 +197,6 @@ merf_area <- function(formula,
   }
   if (ncol(X) == 0) {
     cli::cli_abort("Formula must include at least one covariate.")
-  }
-
-  if (is.null(mtry)) {
-    mtry <- max(1, floor(sqrt(ncol(X))))
   }
 
   # Extract vardir
@@ -207,9 +244,6 @@ merf_area <- function(formula,
     sub_raw <- as.character(data[[subarea]])
     dom_raw <- domain_vec
 
-    # Auto-detection hierarchy logic:
-    # Coarser level (fewer categories) -> Major Area (cluster)
-    # Finer level (more categories) -> Sub-Area
     u_dom <- length(unique(dom_raw))
     u_sub <- length(unique(sub_raw))
 
@@ -251,43 +285,106 @@ merf_area <- function(formula,
     }
   }
 
-  # --- 2. Random Forest Helper Function ---
-  fit_rf <- function(X_mat, target_vec, trees = num_trees, seed_iter = NULL) {
+  # --- 2. Hyperparameter Auto-Tuning (Optional) ---
+  P <- ncol(X)
+  if (isTRUE(tune_params) && engine == "ranger") {
+    if (verbose) cli::cli_inform("Tuning Random Forest hyperparameters via minimum OOB prediction error...")
+    mtry_cands <- unique(pmax(1, pmin(P, c(floor(sqrt(P) / 2), floor(sqrt(P)), floor(P / 2), P))))
+    node_cands <- unique(pmax(1, c(3, 5, 10)))
+
+    df_tune <- as.data.frame(X)
+    df_tune$.target <- y
+    best_oob <- Inf
+    best_mtry <- max(1, floor(sqrt(P)))
+    best_node <- min_node_size
+
+    for (m_c in mtry_cands) {
+      for (n_c in node_cands) {
+        rf_try <- tryCatch(
+          ranger::ranger(
+            formula = .target ~ .,
+            data = df_tune,
+            num.trees = min(150, num_trees),
+            mtry = m_c,
+            min.node.size = n_c,
+            importance = "none",
+            num.threads = num_threads,
+            seed = seed
+          ),
+          error = function(e) NULL
+        )
+        if (!is.null(rf_try) && !is.na(rf_try$prediction.error)) {
+          if (rf_try$prediction.error < best_oob) {
+            best_oob <- rf_try$prediction.error
+            best_mtry <- m_c
+            best_node <- n_c
+          }
+        }
+      }
+    }
+    mtry <- best_mtry
+    min_node_size <- best_node
+    if (verbose) cli::cli_inform("Auto-tuned hyperparameters: mtry = {mtry}, min_node_size = {min_node_size} (OOB MSE: {round(best_oob, 5)})")
+  } else if (is.null(mtry)) {
+    mtry <- max(1, floor(sqrt(P)))
+  }
+
+  # --- 3. Random Forest Helper Function ---
+  fit_rf <- function(X_mat, target_vec, trees = num_trees, cur_weights = NULL, seed_iter = NULL) {
     df_rf <- as.data.frame(X_mat)
     df_rf$.target <- target_vec
-    var_names <- setdiff(names(df_rf), ".target")
+    p_cur <- ncol(X_mat)
+    cur_mtry <- min(mtry, p_cur)
+
+    # Normalize weights if provided
+    cw <- NULL
+    if (!is.null(cur_weights) && isTRUE(weighted)) {
+      cw <- cur_weights / mean(cur_weights)
+    }
 
     if (engine == "ranger") {
       rf_fit <- ranger::ranger(
         formula = .target ~ .,
         data = df_rf,
         num.trees = trees,
-        mtry = mtry,
+        mtry = cur_mtry,
         min.node.size = min_node_size,
         importance = "permutation",
+        case.weights = cw,
         num.threads = num_threads,
         seed = seed_iter
       )
-      preds <- stats::predict(rf_fit, data = df_rf)$predictions
+      in_preds <- stats::predict(rf_fit, data = df_rf)$predictions
+      oob_preds <- rf_fit$predictions
+      if (any(is.na(oob_preds))) {
+        oob_preds <- ifelse(is.na(oob_preds), in_preds, oob_preds)
+      }
       vimp <- rf_fit$variable.importance
-      return(list(fit = rf_fit, pred = preds, importance = vimp))
+      return(list(fit = rf_fit, pred = in_preds, pred_oob = oob_preds, importance = vimp))
     } else {
       rf_fit <- randomForest::randomForest(
         x = X_mat,
         y = target_vec,
         ntree = trees,
-        mtry = mtry,
+        mtry = cur_mtry,
         nodesize = min_node_size,
         importance = TRUE
       )
-      preds <- stats::predict(rf_fit, newdata = X_mat)
+      in_preds <- stats::predict(rf_fit, newdata = X_mat)
+      oob_preds <- rf_fit$predicted
+      if (any(is.na(oob_preds))) {
+        oob_preds <- ifelse(is.na(oob_preds), in_preds, oob_preds)
+      }
       vimp <- rf_fit$importance[, 1]
-      return(list(fit = rf_fit, pred = preds, importance = vimp))
+      return(list(fit = rf_fit, pred = in_preds, pred_oob = oob_preds, importance = vimp))
     }
   }
 
-  # --- 3. Expectation-Maximization (EM) Loop ---
+  # --- 4. Expectation-Maximization (EM) Loop ---
   if (verbose) cli::cli_inform("Initializing MERF EM algorithm (max_iter = {max_iter}, tol = {tol})...")
+
+  X_active <- X
+  screened_done <- FALSE
 
   if (!is_nested && !is_spatial) {
     # Standard Area-Level MERF (Krennmair & Schmid, 2022)
@@ -301,13 +398,39 @@ merf_area <- function(formula,
       # Step 1: Adjusted response
       y_star <- y - u
 
+      # Step 1b: Precision weights
+      weights_iter <- if (isTRUE(weighted)) 1 / (sigma2_u + psi) else NULL
+
       # Step 2: Fit Random Forest
-      rf_res <- fit_rf(X, y_star, trees = num_trees, seed_iter = seed)
-      f_hat <- rf_res$pred
+      rf_res <- fit_rf(X_active, y_star, trees = num_trees, cur_weights = weights_iter, seed_iter = seed)
       final_rf <- rf_res
 
+      # Step 2b: Feature Screening (Noise pruning after iteration 1)
+      if (isTRUE(feature_screening) && !screened_done && iter == 1 && ncol(X_active) > 1) {
+        vimp <- rf_res$importance
+        keep_vars <- names(vimp)[vimp > importance_threshold]
+        if (length(keep_vars) == 0) {
+          # Keep at least the top variable
+          keep_vars <- names(sort(vimp, decreasing = TRUE))[1]
+        }
+        if (length(keep_vars) < ncol(X_active)) {
+          if (verbose) {
+            pruned_count <- ncol(X_active) - length(keep_vars)
+            cli::cli_inform("Feature screening: pruned {pruned_count} noise covariates. Retained: {paste(keep_vars, collapse = ', ')}")
+          }
+          X_active <- X_active[, keep_vars, drop = FALSE]
+          # Refit with active covariates
+          rf_res <- fit_rf(X_active, y_star, trees = num_trees, cur_weights = weights_iter, seed_iter = seed)
+          final_rf <- rf_res
+        }
+        screened_done <- TRUE
+      }
+
+      f_in <- rf_res$pred
+      f_hat_eval <- if (isTRUE(use_oob)) rf_res$pred_oob else f_in
+
       # Step 3: Residuals
-      r <- y - f_hat
+      r <- y - f_hat_eval
 
       # Step 4: Profile Log-Likelihood optimization for sigma2_u
       nll_sigma2 <- function(s2) {
@@ -326,7 +449,7 @@ merf_area <- function(formula,
       gamma <- sigma2_u_new / (sigma2_u_new + psi)
       u_new <- gamma * r
 
-      # Check convergence: relative root-mean-squared change in random effects
+      # Check convergence
       delta_u <- sqrt(mean((u_new - u)^2)) / (stats::sd(y) + 1e-6)
       u <- u_new
       sigma2_u <- sigma2_u_new
@@ -342,13 +465,13 @@ merf_area <- function(formula,
       }
     }
 
-    # Point Estimates
+    # Point Estimates: use in-sample predictions for synthetic baseline plus random effects
+    f_hat <- final_rf$pred
     theta_merf <- f_hat + u
     gamma_vec <- sigma2_u / (sigma2_u + psi)
 
   } else if (is_nested) {
     # Two-Level Nested MERF (Torabi & Rao, 2014)
-    # y_{jk} = f(x_{jk}) + u_j + v_{jk} + e_{jk}
     major_areas <- unique(major_area_vec)
     J <- length(major_areas)
     area_idx_list <- split(seq_len(D), major_area_vec)
@@ -364,13 +487,28 @@ merf_area <- function(formula,
       u_expanded <- u_major[major_area_vec]
       y_star <- y - u_expanded - v_sub
 
-      rf_res <- fit_rf(X, y_star, trees = num_trees, seed_iter = seed)
-      f_hat <- rf_res$pred
+      weights_iter <- if (isTRUE(weighted)) 1 / (sigma2_area + sigma2_sub + psi) else NULL
+      rf_res <- fit_rf(X_active, y_star, trees = num_trees, cur_weights = weights_iter, seed_iter = seed)
       final_rf <- rf_res
 
-      r <- y - f_hat
+      # Feature Screening
+      if (isTRUE(feature_screening) && !screened_done && iter == 1 && ncol(X_active) > 1) {
+        vimp <- rf_res$importance
+        keep_vars <- names(vimp)[vimp > importance_threshold]
+        if (length(keep_vars) == 0) keep_vars <- names(sort(vimp, decreasing = TRUE))[1]
+        if (length(keep_vars) < ncol(X_active)) {
+          X_active <- X_active[, keep_vars, drop = FALSE]
+          rf_res <- fit_rf(X_active, y_star, trees = num_trees, cur_weights = weights_iter, seed_iter = seed)
+          final_rf <- rf_res
+        }
+        screened_done <- TRUE
+      }
 
-      # Fast analytical profile log-likelihood for (sigma2_area, sigma2_sub)
+      f_in <- rf_res$pred
+      f_hat_eval <- if (isTRUE(use_oob)) rf_res$pred_oob else f_in
+      r <- y - f_hat_eval
+
+      # Analytical profile log-likelihood for (sigma2_area, sigma2_sub)
       nll_nested <- function(par) {
         s2_a <- par[1]
         s2_s <- par[2]
@@ -438,13 +576,14 @@ merf_area <- function(formula,
       }
     }
 
+    f_hat <- final_rf$pred
     u <- u_major[major_area_vec] + v_sub
     sigma2_u <- sigma2_area
     theta_merf <- f_hat + u
     gamma_vec <- (sigma2_area + sigma2_sub) / (sigma2_area + sigma2_sub + psi)
 
   } else if (is_spatial) {
-    # Spatial MERF: u ~ N(0, sigma2_u * (I - rho W)^(-1) ((I - rho W)^(-1))')
+    # Spatial MERF
     u <- rep(0, D)
     sigma2_u <- max(0.01, stats::var(y) - mean(psi))
     rho_val <- 0.2
@@ -454,11 +593,26 @@ merf_area <- function(formula,
     I_mat <- diag(D)
     for (iter in seq_len(max_iter)) {
       y_star <- y - u
-      rf_res <- fit_rf(X, y_star, trees = num_trees, seed_iter = seed)
-      f_hat <- rf_res$pred
+      weights_iter <- if (isTRUE(weighted)) 1 / (sigma2_u + psi) else NULL
+      rf_res <- fit_rf(X_active, y_star, trees = num_trees, cur_weights = weights_iter, seed_iter = seed)
       final_rf <- rf_res
 
-      r <- y - f_hat
+      # Feature Screening
+      if (isTRUE(feature_screening) && !screened_done && iter == 1 && ncol(X_active) > 1) {
+        vimp <- rf_res$importance
+        keep_vars <- names(vimp)[vimp > importance_threshold]
+        if (length(keep_vars) == 0) keep_vars <- names(sort(vimp, decreasing = TRUE))[1]
+        if (length(keep_vars) < ncol(X_active)) {
+          X_active <- X_active[, keep_vars, drop = FALSE]
+          rf_res <- fit_rf(X_active, y_star, trees = num_trees, cur_weights = weights_iter, seed_iter = seed)
+          final_rf <- rf_res
+        }
+        screened_done <- TRUE
+      }
+
+      f_in <- rf_res$pred
+      f_hat_eval <- if (isTRUE(use_oob)) rf_res$pred_oob else f_in
+      r <- y - f_hat_eval
 
       nll_spatial <- function(par) {
         s2 <- par[1]
@@ -511,16 +665,16 @@ merf_area <- function(formula,
       }
     }
 
+    f_hat <- final_rf$pred
     theta_merf <- f_hat + u
     gamma_vec <- sigma2_u / (sigma2_u + psi)
   }
 
-  # --- 4. Parametric Bootstrap for MSE Estimation ---
+  # --- 5. Parametric Bootstrap for MSE Estimation ---
   if (mse_type == "bootstrap" && B > 0) {
     if (verbose) cli::cli_inform("Computing Parametric Bootstrap MSE with {B} replications...")
 
     boot_sq_err <- matrix(0, nrow = D, ncol = B)
-    # Use reduced trees and max_iter for faster bootstrap iterations
     boot_trees <- min(150, num_trees)
     boot_max_iter <- min(8, max_iter)
 
@@ -552,9 +706,10 @@ merf_area <- function(formula,
       s2_boot <- sigma2_u
       for (b_iter in seq_len(boot_max_iter)) {
         y_star_b <- y_b - u_boot
-        rf_b <- fit_rf(X, y_star_b, trees = boot_trees, seed_iter = seed_b)
-        f_b <- rf_b$pred
-        r_b <- y_b - f_b
+        w_b <- if (isTRUE(weighted)) 1 / (s2_boot + psi) else NULL
+        rf_b <- fit_rf(X_active, y_star_b, trees = boot_trees, cur_weights = w_b, seed_iter = seed_b)
+        f_b_eval <- if (isTRUE(use_oob)) rf_b$pred_oob else rf_b$pred
+        r_b <- y_b - f_b_eval
 
         opt_b <- stats::optimize(
           function(s2) {
@@ -568,7 +723,7 @@ merf_area <- function(formula,
         g_b <- s2_boot / (s2_boot + psi)
         u_boot <- g_b * r_b
       }
-      theta_hat_b <- f_b + u_boot
+      theta_hat_b <- rf_b$pred + u_boot
       boot_sq_err[, b] <- (theta_hat_b - theta_b)^2
     }
 
@@ -587,7 +742,7 @@ merf_area <- function(formula,
     ci_upper <- theta_merf + 1.96 * sd_est
   }
 
-  # --- 5. Assemble Return Object ---
+  # --- 6. Assemble Return Object ---
   df_estimates <- data.frame(
     domain = domain_vec,
     y = y,
@@ -613,7 +768,11 @@ merf_area <- function(formula,
     sigma2_u = sigma2_u,
     loglik = loglik_val,
     iterations = iter,
-    converged = converged
+    converged = converged,
+    weighted = weighted,
+    use_oob = use_oob,
+    feature_screening = feature_screening,
+    tune_params = tune_params
   )
 
   if (is_nested) {
@@ -635,6 +794,7 @@ merf_area <- function(formula,
       data = data,                # Original data for benchmarking weights and groups
       hyperparams = hyperparams,
       importance = vimp_sorted,
+      selected_vars = colnames(X_active),
       forest = final_rf$fit,
       is_nested = is_nested,
       is_spatial = is_spatial,

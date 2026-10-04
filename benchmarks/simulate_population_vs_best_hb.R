@@ -349,15 +349,19 @@ eval_list[[6]] <- calc_eval_metrics(est_hb_best, true_mean_pop, "6. Best HB Area
                                     pop_weights, target_pop_mean, outlier_domains, t_hb_best)
 
 # ------------------------------------------------------------------------------
-# Model 7: MERF / FH-RF (Mixed Effects Random Forest)
 # ------------------------------------------------------------------------------
-cat(" [7/8] MERF / FH-RF Machine Learning SAE (ranger C++ Multithreaded)...\n")
+# Model 7: Standard MERF (Baseline Machine Learning SAE)
+# ------------------------------------------------------------------------------
+cat(" [7/8] Standard MERF (Baseline ML, unweighted, in-sample residuals)...\n")
 t0 <- Sys.time()
-fit_merf <- fastsaegpu::merf_area(
+fit_merf_std <- fastsaegpu::merf_area(
   formula = formula_linear,
   data = survey_data,
   vardir = "vardir",
   domain = "domain",
+  weighted = FALSE,
+  use_oob = FALSE,
+  feature_screening = FALSE,
   engine = "ranger",
   num_trees = 500,
   max_iter = 30,
@@ -365,21 +369,25 @@ fit_merf <- fastsaegpu::merf_area(
   B = 30,
   seed = 2026L
 )
-t_merf <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
-est_merf <- fit_merf$estimates$merf
-eval_list[[7]] <- calc_eval_metrics(est_merf, true_mean_pop, "7. MERF (Mixed Effects Random Forest)",
-                                    pop_weights, target_pop_mean, outlier_domains, t_merf)
+t_merf_std <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+est_merf_std <- fit_merf_std$estimates$merf
+eval_list[[7]] <- calc_eval_metrics(est_merf_std, true_mean_pop, "7. Standard MERF (Baseline ML)",
+                                    pop_weights, target_pop_mean, outlier_domains, t_merf_std)
 
 # ------------------------------------------------------------------------------
-# Model 8: MERF + GVF Variance Smoothing (Synergy ML SAE)
+# Model 8: Enhanced MERF (Weighted + OOB + Feature Screening + GVF)
 # ------------------------------------------------------------------------------
-cat(" [8/8] MERF + GVF Variance Smoothing (Synergy ML SAE)...\n")
+cat(" [8/8] Enhanced MERF (Precision-Weighted + OOB Residuals + Screening + GVF)...\n")
 t0 <- Sys.time()
-fit_merf_gvf <- fastsaegpu::merf_area(
+fit_merf_enh <- fastsaegpu::merf_area(
   formula = formula_linear,
   data = survey_data,
   vardir = "vardir",
   domain = "domain",
+  weighted = TRUE,
+  use_oob = TRUE,
+  feature_screening = TRUE,
+  importance_threshold = 0.0,
   smooth_vardir = TRUE,
   gvf_method = "log_linear",
   engine = "ranger",
@@ -389,10 +397,10 @@ fit_merf_gvf <- fastsaegpu::merf_area(
   B = 30,
   seed = 2026L
 )
-t_merf_gvf <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
-est_merf_gvf <- fit_merf_gvf$estimates$merf
-eval_list[[8]] <- calc_eval_metrics(est_merf_gvf, true_mean_pop, "8. MERF + GVF Smoothing",
-                                    pop_weights, target_pop_mean, outlier_domains, t_merf_gvf)
+t_merf_enh <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+est_merf_enh <- fit_merf_enh$estimates$merf
+eval_list[[8]] <- calc_eval_metrics(est_merf_enh, true_mean_pop, "8. Enhanced MERF (Full Synergy ML)",
+                                    pop_weights, target_pop_mean, outlier_domains, t_merf_enh)
 
 # ------------------------------------------------------------------------------
 # 5. Tabulasi & Visualisasi Hasil Komparatif
@@ -434,7 +442,7 @@ df_plot_domains <- data.frame(
   domain = rep(survey_data$domain, 4),
   type = factor(rep(c("Direct Survey", "fastsae (INLA)", "Best HB (GPU Synergy)", "MERF (Machine Learning)"), each = D),
                 levels = c("Direct Survey", "fastsae (INLA)", "Best HB (GPU Synergy)", "MERF (Machine Learning)")),
-  estimate = c(est_direct, est_fsae_inla, est_hb_best, est_merf),
+  estimate = c(est_direct, est_fsae_inla, est_hb_best, est_merf_enh),
   true_mean = rep(true_mean_pop, 4),
   is_outlier = rep(survey_data$is_outlier, 4)
 )

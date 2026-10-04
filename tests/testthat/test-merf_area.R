@@ -246,3 +246,104 @@ test_that("merf_area errors appropriately on invalid inputs", {
   expect_error(merf_area(y ~ x, data = df, vardir = "missing_col"), "not found")
   expect_error(merf_area(y ~ 1, data = df, vardir = "vardir"), "at least one covariate")
 })
+
+test_that("merf_area supports precision weighting and OOB residuals", {
+  set.seed(601)
+  D <- 20
+  df <- data.frame(
+    domain = paste0("d", 1:D),
+    y = stats::rnorm(D, 5, 1),
+    vardir = stats::runif(D, 0.02, 0.20),
+    x1 = stats::rnorm(D),
+    x2 = stats::runif(D)
+  )
+
+  fit_wt <- merf_area(
+    formula = y ~ x1 + x2,
+    data = df,
+    vardir = "vardir",
+    weighted = TRUE,
+    use_oob = TRUE,
+    num_trees = 40,
+    mse_type = "none",
+    seed = 601
+  )
+
+  expect_true(fit_wt$hyperparams$weighted)
+  expect_true(fit_wt$hyperparams$use_oob)
+  expect_equal(length(fit_wt$estimates$merf), D)
+  expect_false(any(is.na(fit_wt$estimates$merf)))
+})
+
+test_that("merf_area performs automated feature screening", {
+  set.seed(701)
+  D <- 25
+  x_signal <- stats::rnorm(D)
+  x_noise1 <- stats::rnorm(D)
+  x_noise2 <- stats::rnorm(D)
+  y <- 3 + 2.5 * x_signal + stats::rnorm(D, 0, 0.3)
+
+  df <- data.frame(
+    domain = paste0("d", 1:D),
+    y = y,
+    vardir = rep(0.05, D),
+    x_signal = x_signal,
+    x_noise1 = x_noise1,
+    x_noise2 = x_noise2
+  )
+
+  fit_screen <- merf_area(
+    formula = y ~ x_signal + x_noise1 + x_noise2,
+    data = df,
+    vardir = "vardir",
+    feature_screening = TRUE,
+    importance_threshold = 0.0,
+    num_trees = 60,
+    mse_type = "none",
+    seed = 701
+  )
+
+  expect_true(fit_screen$hyperparams$feature_screening)
+  expect_true("x_signal" %in% fit_screen$selected_vars)
+  expect_true(length(fit_screen$selected_vars) <= 3)
+})
+
+test_that("merf_area supports hyperparameter auto-tuning and predict method", {
+  set.seed(801)
+  D <- 20
+  df <- data.frame(
+    domain = paste0("d", 1:D),
+    y = stats::rnorm(D, 10, 2),
+    vardir = rep(0.1, D),
+    x1 = stats::rnorm(D),
+    x2 = stats::rnorm(D),
+    x3 = stats::runif(D)
+  )
+
+  fit_tuned <- merf_area(
+    formula = y ~ x1 + x2 + x3,
+    data = df,
+    vardir = "vardir",
+    tune_params = TRUE,
+    num_trees = 40,
+    mse_type = "none",
+    seed = 801
+  )
+
+  expect_true(fit_tuned$hyperparams$tune_params)
+
+  # Test predict.fastsaegpu_merf in-sample
+  p_in <- predict(fit_tuned)
+  expect_equal(p_in, fit_tuned$estimates$merf)
+
+  # Test predict.fastsaegpu_merf out-of-sample (newdata)
+  df_new <- data.frame(
+    x1 = c(0.5, -0.5),
+    x2 = c(1.0, -1.0),
+    x3 = c(0.2, 0.8)
+  )
+  p_out <- predict(fit_tuned, newdata = df_new)
+  expect_equal(length(p_out), 2)
+  expect_false(any(is.na(p_out)))
+})
+

@@ -430,3 +430,19 @@ fitted.fastsaegpu_merf <- function(object, ...) {
 residuals.fastsaegpu_merf <- function(object, ...) {
   object$estimates$y - object$estimates$merf
 }
+
+#' @rdname fastsae_hb_area-methods
+#' @param newdata Optional data frame containing new covariates for out-of-sample synthetic prediction.
+#' @export
+predict.fastsaegpu_merf <- function(object, newdata = NULL, ...) {
+  if (is.null(newdata)) {
+    return(object$estimates$merf)
+  }
+  newdata_df <- as.data.frame(newdata)
+  if (object$engine == "ranger") {
+    preds <- stats::predict(object$forest, data = newdata_df)$predictions
+  } else {
+    preds <- stats::predict(object$forest, newdata = newdata_df)
+  }
+  return(preds)
+}
