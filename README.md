@@ -146,10 +146,11 @@ Pengujian empiris dilakukan pada populasi finis tergenerasi ($N \approx 125.000$
 | Model SAE | ARB (%) | RRMSE (%) | Relative Efficiency (RE) | RRMSE Outliers | Waktu Komputasi |
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **Direct Survey Estimator** | 5.67% | 7.40% | 1.00x *(Baseline)* | 5.66% | Instant |
-| **Standard HB Area** | 4.73% | 6.18% | 1.55x | 13.23% | 15.41s |
-| **HB Area + Horseshoe** | 4.16% | 5.56% | 1.91x | 12.33% | 8.10s |
-| **Best HB Area (Synergy)** | **4.13%** | **5.57%** | **1.94x (Terbaik!)** | 13.61% | 7.70s |
-| **MERF (Machine Learning)** | 4.63% | 5.97% | **1.64x** | **12.07% (Terbaik!)** | **1.71s (Tercepat!)** |
+| **fastsae (INLA Laplace)** | 5.12% | 6.54% | 1.38x | 12.74% | 1.78s |
+| **Standard HB Area (GPU)** | 4.73% | 6.18% | 1.55x | 13.23% | 13.79s |
+| **HB Area + Horseshoe** | 4.16% | 5.56% | 1.91x | 12.33% | 7.25s |
+| **Best HB Area (Synergy)** | **4.13%** | **5.57%** | **1.94x (Terbaik!)** | 13.61% | 6.99s |
+| **MERF (Machine Learning)** | 4.63% | 5.97% | **1.64x** | **12.07% (Terbaik!)** | **1.58s (Tercepat!)** |
 
 > *Skrip dan visualisasi replikasi lengkap tersedia di folder [`benchmarks/`](benchmarks/).*
 

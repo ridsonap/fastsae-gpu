@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 # ==============================================================================
 # Monte Carlo Finite Population Simulation Study
-# Comparison: Direct vs Standard HB vs Best HB Synergy vs MERF (Machine Learning)
+# Comparison: Direct vs fastsae (INLA) vs Standard HB vs Best HB Synergy vs MERF
 #
 # Context:
 #   - D = 50 Small Areas (Domains)
@@ -13,16 +13,18 @@
 #
 # Models Evaluated:
 #   1. Direct Survey Estimator
-#   2. Standard HB Area Model (Normal prior, Gaussian RE, noisy direct variance)
-#   3. HB Area + Regularized Horseshoe Prior (Sparse covariate shrinkage)
-#   4. HB Area + Robust Student-t Random Effects (Outlier protection)
-#   5. Best HB Area Model (Full Synergy: GVF Smoothing + Horseshoe + Robust Student-t + Benchmarking)
-#   6. MERF / FH-RF (Mixed Effects Random Forest Machine Learning SAE)
-#   7. MERF + GVF Variance Smoothing (Synergy ML SAE)
+#   2. fastsae (INLA Laplace Approximation)
+#   3. Standard HB Area Model (Normal prior, Gaussian RE, noisy direct variance)
+#   4. HB Area + Regularized Horseshoe Prior (Sparse covariate shrinkage)
+#   5. HB Area + Robust Student-t Random Effects (Outlier protection)
+#   6. Best HB Area Model (Full Synergy: GVF Smoothing + Horseshoe + Robust Student-t + Benchmarking)
+#   7. MERF / FH-RF (Mixed Effects Random Forest Machine Learning SAE)
+#   8. MERF + GVF Variance Smoothing (Synergy ML SAE)
 # ==============================================================================
 
 suppressPackageStartupMessages({
   library(fastsaegpu)
+  library(fastsae)
   library(ranger)
   library(ggplot2)
 })
@@ -31,6 +33,7 @@ set.seed(2026L)
 
 cat("===============================================================================\n")
 cat(" STUDI SIMULASI POPULASI FINIS & EVALUASI KOMPARATIF MODEL TERBAIK HB_AREA\n")
+cat(" Termasuk Pembanding: fastsae (INLA Laplace) vs Best HB Synergy vs MERF ML\n")
 cat("===============================================================================\n\n")
 
 # ------------------------------------------------------------------------------
@@ -221,7 +224,7 @@ eval_list <- list()
 # ------------------------------------------------------------------------------
 # Model 1: Direct Survey Estimator (Baseline)
 # ------------------------------------------------------------------------------
-cat(" [1/7] Direct Survey Estimator (Survey Baseline)...\n")
+cat(" [1/8] Direct Survey Estimator (Survey Baseline)...\n")
 t0 <- Sys.time()
 est_direct <- survey_data$y
 t_direct <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
@@ -229,11 +232,28 @@ eval_list[[1]] <- calc_eval_metrics(est_direct, true_mean_pop, "1. Direct Survey
                                     pop_weights, target_pop_mean, outlier_domains, t_direct)
 
 # ------------------------------------------------------------------------------
-# Model 2: Standard HB Area (Normal Prior, Gaussian RE, No GVF)
+# Model 2: fastsae (INLA Laplace Approximation)
 # ------------------------------------------------------------------------------
-cat(" [2/7] Standard HB Area (Normal prior, Gaussian RE, noisy vardir)...\n")
+cat(" [2/8] fastsae (INLA Laplace Approximation Engine)...\n")
 t0 <- Sys.time()
-fit_hb_std <- hb_area(
+fit_fsae_inla <- fastsae::hb_area(
+  formula = formula_linear,
+  data = survey_data,
+  vardir = "vardir",
+  family = "gaussian",
+  print_result = FALSE
+)
+t_fsae_inla <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+est_fsae_inla <- fit_fsae_inla$df_hb$hb
+eval_list[[2]] <- calc_eval_metrics(est_fsae_inla, true_mean_pop, "2. fastsae (INLA Laplace)",
+                                    pop_weights, target_pop_mean, outlier_domains, t_fsae_inla)
+
+# ------------------------------------------------------------------------------
+# Model 3: Standard HB Area (Normal Prior, Gaussian RE, No GVF)
+# ------------------------------------------------------------------------------
+cat(" [3/8] Standard HB Area (Normal prior, Gaussian RE, noisy vardir)...\n")
+t0 <- Sys.time()
+fit_hb_std <- fastsaegpu::hb_area(
   formula = formula_linear,
   data = survey_data,
   vardir = "vardir",
@@ -249,15 +269,15 @@ fit_hb_std <- hb_area(
 )
 t_hb_std <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
 est_hb_std <- fit_hb_std$df_hb$hb
-eval_list[[2]] <- calc_eval_metrics(est_hb_std, true_mean_pop, "2. Standard HB Area",
+eval_list[[3]] <- calc_eval_metrics(est_hb_std, true_mean_pop, "3. Standard HB Area",
                                     pop_weights, target_pop_mean, outlier_domains, t_hb_std)
 
 # ------------------------------------------------------------------------------
-# Model 3: HB Area + Horseshoe Prior (Sparse Shrinkage untuk 8 Noise Covariates)
+# Model 4: HB Area + Horseshoe Prior (Sparse Shrinkage untuk 8 Noise Covariates)
 # ------------------------------------------------------------------------------
-cat(" [3/7] HB Area + Regularized Horseshoe Prior (Carvalho et al. 2010)...\n")
+cat(" [4/8] HB Area + Regularized Horseshoe Prior (Carvalho et al. 2010)...\n")
 t0 <- Sys.time()
-fit_hb_hs <- hb_area(
+fit_hb_hs <- fastsaegpu::hb_area(
   formula = formula_linear,
   data = survey_data,
   vardir = "vardir",
@@ -273,15 +293,15 @@ fit_hb_hs <- hb_area(
 )
 t_hb_hs <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
 est_hb_hs <- fit_hb_hs$df_hb$hb
-eval_list[[3]] <- calc_eval_metrics(est_hb_hs, true_mean_pop, "3. HB Area + Horseshoe Prior",
+eval_list[[4]] <- calc_eval_metrics(est_hb_hs, true_mean_pop, "4. HB Area + Horseshoe Prior",
                                     pop_weights, target_pop_mean, outlier_domains, t_hb_hs)
 
 # ------------------------------------------------------------------------------
-# Model 4: HB Area + Robust Student-t Random Effects (Bell & Huang 2006)
+# Model 5: HB Area + Robust Student-t Random Effects (Bell & Huang 2006)
 # ------------------------------------------------------------------------------
-cat(" [4/7] HB Area + Robust Student-t Random Effects (Proteksi Outlier)...\n")
+cat(" [5/8] HB Area + Robust Student-t Random Effects (Proteksi Outlier)...\n")
 t0 <- Sys.time()
-fit_hb_rob <- hb_area(
+fit_hb_rob <- fastsaegpu::hb_area(
   formula = formula_linear,
   data = survey_data,
   vardir = "vardir",
@@ -297,15 +317,15 @@ fit_hb_rob <- hb_area(
 )
 t_hb_rob <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
 est_hb_rob <- fit_hb_rob$df_hb$hb
-eval_list[[4]] <- calc_eval_metrics(est_hb_rob, true_mean_pop, "4. HB Area + Student-t Robust",
+eval_list[[5]] <- calc_eval_metrics(est_hb_rob, true_mean_pop, "5. HB Area + Student-t Robust",
                                     pop_weights, target_pop_mean, outlier_domains, t_hb_rob)
 
 # ------------------------------------------------------------------------------
-# Model 5: Best HB Area Model (Full Synergy: GVF + Horseshoe + Robust + Benchmarking)
+# Model 6: Best HB Area Model (Full Synergy: GVF + Horseshoe + Robust + Benchmarking)
 # ------------------------------------------------------------------------------
-cat(" [5/7] Model Terbaik HB Area: Full Synergy (GVF + Horseshoe + Robust + Benchmark)...\n")
+cat(" [6/8] Model Terbaik HB Area: Full Synergy (GVF + Horseshoe + Robust + Benchmark)...\n")
 t0 <- Sys.time()
-fit_hb_best <- hb_area(
+fit_hb_best <- fastsaegpu::hb_area(
   formula = formula_linear,
   data = survey_data,
   vardir = "vardir",
@@ -325,15 +345,15 @@ fit_hb_best <- hb_area(
 )
 t_hb_best <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
 est_hb_best <- fit_hb_best$df_hb$hb
-eval_list[[5]] <- calc_eval_metrics(est_hb_best, true_mean_pop, "5. Best HB Area (Full Synergy)",
+eval_list[[6]] <- calc_eval_metrics(est_hb_best, true_mean_pop, "6. Best HB Area (Full Synergy)",
                                     pop_weights, target_pop_mean, outlier_domains, t_hb_best)
 
 # ------------------------------------------------------------------------------
-# Model 6: MERF / FH-RF (Mixed Effects Random Forest)
+# Model 7: MERF / FH-RF (Mixed Effects Random Forest)
 # ------------------------------------------------------------------------------
-cat(" [6/7] MERF / FH-RF Machine Learning SAE (ranger C++ Multithreaded)...\n")
+cat(" [7/8] MERF / FH-RF Machine Learning SAE (ranger C++ Multithreaded)...\n")
 t0 <- Sys.time()
-fit_merf <- merf_area(
+fit_merf <- fastsaegpu::merf_area(
   formula = formula_linear,
   data = survey_data,
   vardir = "vardir",
@@ -347,15 +367,15 @@ fit_merf <- merf_area(
 )
 t_merf <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
 est_merf <- fit_merf$estimates$merf
-eval_list[[6]] <- calc_eval_metrics(est_merf, true_mean_pop, "6. MERF (Mixed Effects Random Forest)",
+eval_list[[7]] <- calc_eval_metrics(est_merf, true_mean_pop, "7. MERF (Mixed Effects Random Forest)",
                                     pop_weights, target_pop_mean, outlier_domains, t_merf)
 
 # ------------------------------------------------------------------------------
-# Model 7: MERF + GVF Variance Smoothing (Synergy ML SAE)
+# Model 8: MERF + GVF Variance Smoothing (Synergy ML SAE)
 # ------------------------------------------------------------------------------
-cat(" [7/7] MERF + GVF Variance Smoothing (Synergy ML SAE)...\n")
+cat(" [8/8] MERF + GVF Variance Smoothing (Synergy ML SAE)...\n")
 t0 <- Sys.time()
-fit_merf_gvf <- merf_area(
+fit_merf_gvf <- fastsaegpu::merf_area(
   formula = formula_linear,
   data = survey_data,
   vardir = "vardir",
@@ -371,7 +391,7 @@ fit_merf_gvf <- merf_area(
 )
 t_merf_gvf <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
 est_merf_gvf <- fit_merf_gvf$estimates$merf
-eval_list[[7]] <- calc_eval_metrics(est_merf_gvf, true_mean_pop, "7. MERF + GVF Smoothing",
+eval_list[[8]] <- calc_eval_metrics(est_merf_gvf, true_mean_pop, "8. MERF + GVF Smoothing",
                                     pop_weights, target_pop_mean, outlier_domains, t_merf_gvf)
 
 # ------------------------------------------------------------------------------
@@ -409,12 +429,12 @@ cat("===========================================================================
 write.csv(df_results, "benchmarks/population_simulation_model_comparison.csv", row.names = FALSE)
 cat("Hasil tabel lengkap telah disimpan ke: benchmarks/population_simulation_model_comparison.csv\n")
 
-# Buat Data Frame Prediksi per Domain untuk Visualisasi
+# Buat Data Frame Prediksi per Domain untuk Visualisasi 4 Arsitektur Utama
 df_plot_domains <- data.frame(
   domain = rep(survey_data$domain, 4),
-  type = factor(rep(c("Direct Survey", "Standard HB", "Best HB (Synergy)", "MERF (ML)"), each = D),
-                levels = c("Direct Survey", "Standard HB", "Best HB (Synergy)", "MERF (ML)")),
-  estimate = c(est_direct, est_hb_std, est_hb_best, est_merf),
+  type = factor(rep(c("Direct Survey", "fastsae (INLA)", "Best HB (GPU Synergy)", "MERF (Machine Learning)"), each = D),
+                levels = c("Direct Survey", "fastsae (INLA)", "Best HB (GPU Synergy)", "MERF (Machine Learning)")),
+  estimate = c(est_direct, est_fsae_inla, est_hb_best, est_merf),
   true_mean = rep(true_mean_pop, 4),
   is_outlier = rep(survey_data$is_outlier, 4)
 )
@@ -470,7 +490,7 @@ p2 <- ggplot(plot_metrics_df, aes(x = Value, y = Model, fill = Metric)) +
 
 # Simpan grafik
 ggsave("benchmarks/population_sim_scatter_comparison.png", plot = p1, width = 9.5, height = 7.5, dpi = 300)
-ggsave("benchmarks/population_sim_accuracy_bars.png", plot = p2, width = 9.0, height = 5.5, dpi = 300)
+ggsave("benchmarks/population_sim_accuracy_bars.png", plot = p2, width = 9.0, height = 6.0, dpi = 300)
 cat("Grafik visualisasi telah disimpan:\n")
 cat(" - benchmarks/population_sim_scatter_comparison.png\n")
 cat(" - benchmarks/population_sim_accuracy_bars.png\n\n")
