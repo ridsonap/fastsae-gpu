@@ -69,6 +69,18 @@
   * Estimates hyperparameter `sigma2_subarea` and Intra-Cluster Correlation (ICC) diagnostic: $\text{ICC}_{\text{nested}} = \sigma_{\text{area}}^2 / (\sigma_{\text{area}}^2 + \sigma_{\text{subarea}}^2)$.
   * Full S3 methods support: `print.fastsaegpu_hb_area()` displays hierarchical levels and ICC.
 
+* Hierarchical Bayes Twofold Subarea Model (`hb_twofold()`, Torabi & Rao 2014):
+  * Dedicated GPU NumPyro implementation of the twofold subarea-level HB model, following
+    Torabi & Rao (2014) *JMVA*, Rao & Molina (2015, Ch. 8), Mohadjer et al. (2007), and
+    Erciulescu et al. (2019): `y_jk | theta_jk ~ N(theta_jk, psi_jk)`,
+    `theta_jk = x_jk' beta + v_j + u_jk`.
+  * Estimates subarea means (`df_hb`/`df_subarea`) and aggregate area means (`df_area`) simultaneously;
+    area means aggregated from full posterior draws as `theta_j. = sum_k W_jk theta_jk`
+    with normalized weights `W_jk = w_jk / sum_k w_jk`.
+  * Supports non-sampled subareas (`y = NA`): predicted from the linking model only.
+  * Returns fastsae-compatible structure plus saeHB.twofold-compatible aliases (`Mean`/`SD`/`CV`/`MSE` in `Est_sub`/`Est_area`, `coefficient`, `refVar`, `hb`/`df_eblup`).
+  * Inherits `fastsae_hb_area` class: `benchmark()`, `coef()`, `fitted()`, `residuals()` work directly.
+
 * Mixed Effects Random Forest Small Area Estimation (`merf_area()`):
   * Implements semi-parametric Mixed Effects Random Forest (MERF) and Fay-Herriot Random Forest (FH-RF) based on Krennmair & Schmid (2022) *JRSS-C*, Hajjem et al. (2014) *JSCS*, and Bukhari et al. (2025) *IPB University*.
   * Replaces linear fixed effects $X\beta$ with non-parametric Random Forest ensemble $f(X)$, capturing complex non-linearities and high-order interactions without manual feature engineering.

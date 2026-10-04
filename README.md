@@ -85,21 +85,24 @@ plot(fit_merf, type = "importance")  # Ranking pengaruh variabel
 plot(fit_merf, type = "estimates")   # Scatter Direct vs MERF
 ```
 
-### 3. Model Hierarki Bersarang Dua Tingkat (Torabi & Rao, 2014)
+### 3. Model Twofold Subarea HB (Torabi & Rao, 2014)
 
 ```r
-# Kluster makro (Provinsi) dan sub-area (Kabupaten/Kota)
-fit_nested <- hb_area(
+# Estimasi simultan mean subarea (kabupaten) + mean area (provinsi),
+# dukung subarea non-sampled (y = NA) ala saeHB.twofold::NormalTF
+fit_tf <- hb_twofold(
   formula = y ~ x1 + x2,
   data = data_survey,
-  vardir = "var_direct",
-  domain = "provinsi",
+  area = "provinsi",
   subarea = "kabupaten",
+  vardir = "var_direct",
+  weight = "pop_weight",   # bobot agregasi W_jk -> mean area
   device = "auto"
 )
 
-print(fit_nested)
-# > Hierarchy: Two-Level Nested Sub-Area [34 Major Areas -> 514 Sub-Areas | ICC: 0.3821]
+print(fit_tf)
+head(fit_tf$df_hb)   # subarea: domain, subarea, y, hb, ..., random_effect_area/subarea
+head(fit_tf$df_area) # area: domain, hb_area, sd_area, ..., n_subareas
 ```
 
 ### 4. Model Spatio-Temporal Panel SAE
@@ -126,7 +129,7 @@ fit_st <- hb_area(
 
 | Komponen | Pilihan yang Didukung | Keterangan |
 | :--- | :--- | :--- |
-| **Model Tipe** | `hb_area()` (Bayesian MCMC), `merf_area()` (Machine Learning) | Inferensi posterior penuh vs C++ tree ensemble |
+| **Model Tipe** | `hb_area()` (Bayesian MCMC), `hb_twofold()` (Twofold HB, Torabi & Rao 2014), `merf_area()` (Machine Learning) | Inferensi posterior penuh vs C++ tree ensemble |
 | **Distribusi (Family)** | `gaussian`, `binomial`, `poisson`, `beta`, `nbinomial`, `gamma` | Beragam jenis respon (proporsi, cacahan, kontinu positif) |
 | **Prior Spasial** | `none`, `besag` (ICAR), `bym`, `bym2` (scaled), `leroux` CAR | Menggunakan matriks ketetanggaan $W$ |
 | **Dinamika Waktu** | `none`, `ar1`, `rw1` (sum-to-zero), `iid` | Tren dan persistensi serial antar tahun |

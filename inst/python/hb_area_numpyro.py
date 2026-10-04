@@ -113,7 +113,8 @@ def fit_numpyro_hb(
     benchmark_target=None,
     benchmark_method="logit",
     prior_beta="normal",
-    robust=False
+    robust=False,
+    twofold_weights=None
 ):
     jax, jnp, numpyro, dist, MCMC, NUTS, init_to_median, dev_str = init_jax_environment(device)
 
@@ -294,6 +295,14 @@ def fit_numpyro_hb(
         eta = jnp.clip(eta_raw, -8.0, 8.0) if family in ("beta", "binomial") else eta_raw
         numpyro.deterministic("linear_pred", eta)
         numpyro.deterministic("rand_eff", rand_total)
+        # ponytail: split components for fastsae::hb_twofold df_hb (random_effect_area/subarea)
+        _u_area_comp = u_spatial[domain_jnp]
+        if subarea_jnp is not None and num_subareas > 1:
+            _u_sub_comp = u_subarea[subarea_jnp]
+        else:
+            _u_sub_comp = jnp.zeros(N)
+        numpyro.deterministic("rand_eff_area", _u_area_comp)
+        numpyro.deterministic("rand_eff_subarea", _u_sub_comp)
 
         # Likelihood and observation sampling
         if family == "gaussian":
@@ -462,11 +471,45 @@ def fit_numpyro_hb(
         hb_bench_ci_lower = np.percentile(hb_bench_samples, 2.5, axis=0).tolist()
         hb_bench_ci_upper = np.percentile(hb_bench_samples, 97.5, axis=0).tolist()
 
+    # Twofold subarea -> area aggregation (Torabi & Rao 2014; Rao & Molina 2015 Ch.8)
+    # Area mean: theta_j. = sum_k W_jk * theta_jk, weights normalized per area.
+    # ponytail: gaussian-only aggregation; extend when non-gaussian twofold needed.
+    area_mean = None
+    area_sd = None
+    area_ci_lower = None
+    area_ci_upper = None
+    if twofold_weights is not None:
+        w_tf = np.asarray(twofold_weights, dtype=np.float64)
+        w_tf = np.where(np.isnan(w_tf), 0.0, w_tf)
+        domain_np = np.asarray(domain_idx, dtype=np.int64)
+        area_draws = np.zeros((hb_samples.shape[0], int(D)), dtype=np.float64)
+        for _j in range(int(D)):
+            _idx = np.where(domain_np == _j)[0]
+            if len(_idx) == 0:
+                continue
+            _w = w_tf[_idx]
+            _s = float(np.sum(_w))
+            _wn = (_w / _s) if _s > 0 else (np.ones(len(_idx)) / len(_idx))
+            area_draws[:, _j] = np.sum(hb_samples[:, _idx] * _wn[None, :], axis=1)
+        area_mean = np.mean(area_draws, axis=0).tolist()
+        area_sd = np.std(area_draws, axis=0).tolist()
+        area_ci_lower = np.percentile(area_draws, 2.5, axis=0).tolist()
+        area_ci_upper = np.percentile(area_draws, 97.5, axis=0).tolist()
+
     linpred_samples = np.asarray(samples["linear_pred"])
     linpred_mean = np.mean(linpred_samples, axis=0).tolist()
 
     rand_eff_samples = np.asarray(samples["rand_eff"])
     rand_eff_mean = np.mean(rand_eff_samples, axis=0).tolist()
+    # ponytail: means only; full draws for split effects skipped (recompute from hb draws when needed).
+    if "rand_eff_area" in samples:
+        rand_eff_area_mean = np.mean(np.asarray(samples["rand_eff_area"]), axis=0).tolist()
+    else:
+        rand_eff_area_mean = None
+    if "rand_eff_subarea" in samples:
+        rand_eff_subarea_mean = np.mean(np.asarray(samples["rand_eff_subarea"]), axis=0).tolist()
+    else:
+        rand_eff_subarea_mean = None
 
     # Hyperparameters
     hyperparams = {}
@@ -596,6 +639,8 @@ def fit_numpyro_hb(
         "hb_ci_upper": hb_ci_upper,
         "linpred_mean": linpred_mean,
         "rand_eff_mean": rand_eff_mean,
+        "rand_eff_area_mean": rand_eff_area_mean,
+        "rand_eff_subarea_mean": rand_eff_subarea_mean,
         "hyperparameters": hyperparams,
         "waic": waic,
         "p_waic": p_waic,
@@ -609,5 +654,9 @@ def fit_numpyro_hb(
         "hb_bench_sd": hb_bench_sd,
         "hb_ci_lower_bench": hb_bench_ci_lower,
         "hb_ci_upper_bench": hb_bench_ci_upper,
+        "area_mean": area_mean,
+        "area_sd": area_sd,
+        "area_ci_lower": area_ci_lower,
+        "area_ci_upper": area_ci_upper,
         "shrinkage_weights": shrinkage_weights
     }
