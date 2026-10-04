@@ -270,3 +270,163 @@ plot.fastsaegpu_benchmark <- function(x, ...) {
     )
   p
 }
+
+# ==============================================================================
+# S3 Methods for fastsaegpu_merf (Mixed Effects Random Forest)
+# ==============================================================================
+
+#' @rdname fastsae_hb_area-methods
+#' @export
+print.fastsaegpu_merf <- function(x, ...) {
+  cli::cli_h1("Mixed Effects Random Forest Small Area Estimation (MERF / FH-RF)")
+  if (!is.null(x$call)) {
+    cli::cli_text("{.strong Call}: {deparse(x$call)}")
+  }
+  cli::cli_text("{.strong Engine}: {x$engine} (Random Forest)")
+  if (isTRUE(x$is_nested)) {
+    cli::cli_text("{.strong Hierarchy}: Two-Level Nested Sub-Area [ICC: {round(x$hyperparams$icc_nested, 4)}]")
+  } else if (isTRUE(x$is_spatial)) {
+    cli::cli_text("{.strong Spatial}: SAR Autoregressive (rho = {round(x$hyperparams$rho_spatial, 4)})")
+  } else {
+    cli::cli_text("{.strong Structure}: Standard Area-Level (Fay-Herriot RF)")
+  }
+  cli::cli_text("{.strong Iterations}: {x$hyperparams$iterations} (Converged: {x$hyperparams$converged})")
+
+  cli::cli_h2("Variance Components & Hyperparameters:")
+  hp_df <- data.frame(
+    Parameter = "sigma2_u",
+    Estimate = as.numeric(x$hyperparams$sigma2_u),
+    stringsAsFactors = FALSE
+  )
+  if (isTRUE(x$is_nested)) {
+    hp_df <- rbind(
+      hp_df,
+      data.frame(Parameter = "sigma2_subarea", Estimate = as.numeric(x$hyperparams$sigma2_subarea)),
+      data.frame(Parameter = "icc_nested", Estimate = as.numeric(x$hyperparams$icc_nested))
+    )
+  }
+  if (isTRUE(x$is_spatial)) {
+    hp_df <- rbind(
+      hp_df,
+      data.frame(Parameter = "rho_spatial", Estimate = as.numeric(x$hyperparams$rho_spatial))
+    )
+  }
+  print(hp_df, row.names = FALSE)
+
+  cli::cli_h2("Top Variable Importance:")
+  top_n <- min(5, length(x$importance))
+  vimp_top <- data.frame(
+    Variable = names(x$importance)[seq_len(top_n)],
+    Importance = round(as.numeric(x$importance)[seq_len(top_n)], 4),
+    stringsAsFactors = FALSE
+  )
+  print(vimp_top, row.names = FALSE)
+
+  cli::cli_h2("Estimates (First 6 domains):")
+  disp_cols <- intersect(c("domain", "y", "merf", "rf_pred", "random_effect", "gamma", "sd", "mse", "rse", "subarea"), names(x$estimates))
+  print(utils::head(x$estimates[, disp_cols, drop = FALSE], 6))
+  if (nrow(x$estimates) > 6) {
+    cli::cli_text("... and {nrow(x$estimates) - 6} more rows.")
+  }
+  invisible(x)
+}
+
+#' @rdname fastsae_hb_area-methods
+#' @export
+summary.fastsaegpu_merf <- function(object, ...) {
+  structure(
+    list(
+      call = object$call,
+      engine = object$engine,
+      is_nested = object$is_nested,
+      is_spatial = object$is_spatial,
+      hyperparams = object$hyperparams,
+      importance = object$importance,
+      n_domains = nrow(object$estimates),
+      estimates_summary = summary(object$estimates$merf),
+      gamma_summary = summary(object$estimates$gamma),
+      rse_summary = summary(object$estimates$rse)
+    ),
+    class = "summary.fastsaegpu_merf"
+  )
+}
+
+#' @rdname fastsae_hb_area-methods
+#' @export
+print.summary.fastsaegpu_merf <- function(x, ...) {
+  cli::cli_h1("Summary of MERF Small Area Estimation (FH-RF)")
+  if (!is.null(x$call)) {
+    cli::cli_text("{.strong Call}: {deparse(x$call)}")
+  }
+  cli::cli_text("Domains: {x$n_domains} | Engine: {x$engine}")
+  cli::cli_text("Iterations: {x$hyperparams$iterations} (Converged: {x$hyperparams$converged})")
+  cli::cli_text("sigma2_u: {round(x$hyperparams$sigma2_u, 5)}")
+
+  cli::cli_h2("Shrinkage Factors (gamma):")
+  print(x$gamma_summary)
+
+  cli::cli_h2("RSE (%) Distribution:")
+  print(x$rse_summary)
+
+  cli::cli_h2("Variable Importance:")
+  print(x$importance)
+  invisible(x)
+}
+
+#' @rdname fastsae_hb_area-methods
+#' @param type Character specifying plot type: \code{"importance"} (variable importance bar plot) or \code{"estimates"} (scatter of direct vs MERF estimates).
+#' @export
+plot.fastsaegpu_merf <- function(x, type = c("importance", "estimates"), ...) {
+  type <- match.arg(type)
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    cli::cli_abort("Package {.pkg ggplot2} is required to plot {.cls fastsaegpu_merf} objects.")
+  }
+  if (type == "importance") {
+    vimp <- x$importance
+    df_vimp <- data.frame(
+      Variable = factor(names(vimp), levels = rev(names(vimp))),
+      Importance = as.numeric(vimp)
+    )
+    p <- ggplot2::ggplot(df_vimp, ggplot2::aes(x = Importance, y = Variable)) +
+      ggplot2::geom_col(fill = "#2ca02c", alpha = 0.85, width = 0.6) +
+      ggplot2::theme_minimal() +
+      ggplot2::labs(
+        title = "Random Forest Variable Importance (MERF / FH-RF)",
+        subtitle = paste0("Engine: ", x$engine, " | Trees: ", x$forest$num.trees %||% 500),
+        x = "Importance Score",
+        y = "Covariate"
+      )
+    return(p)
+  } else {
+    df <- x$estimates
+    p <- ggplot2::ggplot(df, ggplot2::aes(x = y, y = merf)) +
+      ggplot2::geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray50") +
+      ggplot2::geom_point(color = "#1f77b4", size = 2.5, alpha = 0.8) +
+      ggplot2::theme_minimal() +
+      ggplot2::labs(
+        title = "Small Area Estimation: Direct vs MERF",
+        subtitle = paste0("Convergence in ", x$hyperparams$iterations, " iterations | sigma2_u: ", round(x$hyperparams$sigma2_u, 4)),
+        x = "Direct Survey Estimate (y)",
+        y = "MERF Small Area Predictor"
+      )
+    return(p)
+  }
+}
+
+#' @rdname fastsae_hb_area-methods
+#' @export
+coef.fastsaegpu_merf <- function(object, ...) {
+  object$importance
+}
+
+#' @rdname fastsae_hb_area-methods
+#' @export
+fitted.fastsaegpu_merf <- function(object, ...) {
+  object$estimates$merf
+}
+
+#' @rdname fastsae_hb_area-methods
+#' @export
+residuals.fastsaegpu_merf <- function(object, ...) {
+  object$estimates$y - object$estimates$merf
+}

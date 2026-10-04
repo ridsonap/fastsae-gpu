@@ -3,12 +3,24 @@
 \name{benchmark}
 \alias{benchmark}
 \alias{benchmark_sae}
+\alias{benchmark.fastsaegpu_merf}
 \alias{benchmark.fastsae_hb_area}
 \title{Benchmark Small Area Estimation Models}
 \usage{
 benchmark(object, ...)
 
 benchmark_sae(object, ...)
+
+\method{benchmark}{fastsaegpu_merf}(
+  object,
+  target = NULL,
+  weight = NULL,
+  method = NULL,
+  group = NULL,
+  type = c("mean", "total"),
+  type_target = c("auto", "internal", "external"),
+  ...
+)
 
 \method{benchmark}{fastsae_hb_area}(
   object,
@@ -22,7 +34,7 @@ benchmark_sae(object, ...)
 )
 }
 \arguments{
-\item{object}{A fitted model object of class \code{fastsae_hb_area}.}
+\item{object}{A fitted model object of class \code{fastsae_hb_area} or \code{fastsaegpu_merf}.}
 
 \item{...}{Additional arguments passed to specific methods.}
 

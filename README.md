@@ -522,6 +522,22 @@ flowchart LR
 - **Argumen di `hb_area()`:** Cukup tambahkan `subarea = "kabupaten"` bersama `domain = "provinsi"`.
   *Catatan Cerdas:* Dilengkapi mekanisme *auto-detection hierarchy*—jika urutan tertukar (`domain = "kabupaten", subarea = "provinsi"`), fungsi secara otomatis memetakan level kardinalitas yang lebih sedikit sebagai area makro dan level yang lebih banyak sebagai sub-area tanpa menimbulkan error!
 
+### 5. Fitur E: Mixed Effects Random Forest (MERF / FH-RF Machine Learning SAE)
+- **Rujukan Literatur:** Krennmair & Schmid (2022) *JRSS-C*; Hajjem, Bellavance, & Larocque (2014) *JSCS*; Bukhari, Notodiputro, Indahwati, & Fitrianto (2025) *IPB University Research*.
+- **Latar Belakang Metodologis:** Hubungan antara indikator survei dan data pembantu administratif (seperti data satelit, podes, sensus) sering kali memiliki sifat non-linearitas yang ekstrem dan interaksi tingkat tinggi yang sulit ditangkap oleh regresi linear biasa. MERF menggantikan komponen fixed effects linear $\mathbf{x}_i^\top \boldsymbol{\beta}$ dengan ansambel pohon keputusan non-parametrik $f(\mathbf{x}_i)$, sementara tetap mempertahankan komponen efek acak area $u_i \sim \mathcal{N}(0, \sigma_u^2)$ dan sampling variance $\psi_i$.
+- **Formulasi:**
+  $$\theta_i = f(\mathbf{x}_i) + u_i$$
+  $$y_i \mid \theta_i \sim \mathcal{N}(\theta_i, \psi_i)$$
+  Estimator komposit SAE-nya adalah:
+  $$\hat{\theta}_i^{\text{MERF}} = \hat{\gamma}_i y_i + (1 - \hat{\gamma}_i) \hat{f}(\mathbf{x}_i), \quad \hat{\gamma}_i = \frac{\hat{\sigma}_u^2}{\hat{\sigma}_u^2 + \psi_i}$$
+- **Keunggulan Teknis:**
+  - **Mesin C++ Multithread:** Menggunakan `ranger` untuk pelatihan pohon secara instan tanpa overhead runtime.
+  - **Algoritma EM:** Memisahkan fitting Random Forest pada target terkalibrasi $y - u$ dan optimasi profil log-likelihood untuk varians area $\sigma_u^2$.
+  - **Parametric Bootstrap MSE:** Mengestimasi MSE, RSE, dan 95% selang kepercayaan empiris (Krennmair & Schmid, 2022).
+  - **Variable Importance:** Menghitung ranking pengaruh variabel prediktor secara otomatis.
+  - **Ekstensi Modular:** Mendukung struktur bersarang dua tingkat (`subarea`), dependensi spasial (`spatial = W`), stabilisasi varians (`smooth_vardir = TRUE`), dan kalibrasi (`benchmark()`).
+- **Argumen di `merf_area()`:** `merf_area(formula, data, vardir, domain = NULL, subarea = NULL, spatial = NULL, engine = "ranger", mse_type = "bootstrap", B = 50)`.
+
 ---
 
 ### 📊 Hasil Komparasi Simulasi Empiris (50 Domains, 15 Kovariat, 4 Outliers)
@@ -603,6 +619,29 @@ fit_nested <- hb_area(
 # Output mencakup estimasi sigma2_u, sigma2_subarea, dan Intra-Cluster Correlation (ICC):
 print(fit_nested)
 # > Hierarchy: Two-Level Nested Sub-Area [34 Major Areas -> 514 Sub-Areas | ICC: 0.3821]
+
+# 3. Menjalankan Mixed Effects Random Forest (MERF / FH-RF Machine Learning SAE):
+fit_merf <- merf_area(
+  formula = y ~ x1 + x2 + x3 + x4,
+  data = data_survey,
+  vardir = "var_direct",
+  domain = "kabupaten",
+  engine = "ranger",          # C++ multithreaded engine
+  num_trees = 500,
+  mse_type = "bootstrap",     # Parametric bootstrap MSE (Krennmair & Schmid, 2022)
+  B = 50,
+  seed = 123
+)
+
+# Cetak ringkasan, ranking variable importance, dan plot visualisasi
+print(fit_merf)
+summary(fit_merf)
+plot(fit_merf, type = "importance") # Bar chart variable importance
+plot(fit_merf, type = "estimates")  # Scatter plot Direct vs MERF
+
+# Kalibrasi hasil MERF dengan Benchmarking
+bm_merf <- benchmark(fit_merf, target = 0.25, weight = "pop_weight")
+print(bm_merf)
 ```
 
 

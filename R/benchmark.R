@@ -6,7 +6,7 @@
 #' and \strong{External Benchmarking} (where external official totals from a
 #' census, registry, or published national release are provided).
 #'
-#' @param object A fitted model object of class \code{fastsae_hb_area}.
+#' @param object A fitted model object of class \code{fastsae_hb_area} or \code{fastsaegpu_merf}.
 #' @param ... Additional arguments passed to specific methods.
 #'
 #' @export
@@ -18,6 +18,28 @@ benchmark <- function(object, ...) {
 #' @export
 benchmark_sae <- function(object, ...) {
   benchmark(object, ...)
+}
+
+#' @rdname benchmark
+#' @export
+benchmark.fastsaegpu_merf <- function(object,
+                                      target = NULL,
+                                      weight = NULL,
+                                      method = NULL,
+                                      group = NULL,
+                                      type = c("mean", "total"),
+                                      type_target = c("auto", "internal", "external"),
+                                      ...) {
+  benchmark.fastsae_hb_area(
+    object = object,
+    target = target,
+    weight = weight,
+    method = method,
+    group = group,
+    type = type,
+    type_target = type_target,
+    ...
+  )
 }
 
 #' @rdname benchmark

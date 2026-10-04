@@ -8,6 +8,13 @@
 \alias{coef.fastsae_hb_area}
 \alias{fitted.fastsae_hb_area}
 \alias{residuals.fastsae_hb_area}
+\alias{print.fastsaegpu_merf}
+\alias{summary.fastsaegpu_merf}
+\alias{print.summary.fastsaegpu_merf}
+\alias{plot.fastsaegpu_merf}
+\alias{coef.fastsaegpu_merf}
+\alias{fitted.fastsaegpu_merf}
+\alias{residuals.fastsaegpu_merf}
 \title{Methods for fastsae_hb_area objects}
 \usage{
 \method{print}{fastsae_hb_area}(x, ...)
@@ -21,11 +28,27 @@
 \method{fitted}{fastsae_hb_area}(object, ...)
 
 \method{residuals}{fastsae_hb_area}(object, ...)
+
+\method{print}{fastsaegpu_merf}(x, ...)
+
+\method{summary}{fastsaegpu_merf}(object, ...)
+
+\method{print}{summary.fastsaegpu_merf}(x, ...)
+
+\method{plot}{fastsaegpu_merf}(x, type = c("importance", "estimates"), ...)
+
+\method{coef}{fastsaegpu_merf}(object, ...)
+
+\method{fitted}{fastsaegpu_merf}(object, ...)
+
+\method{residuals}{fastsaegpu_merf}(object, ...)
 }
 \arguments{
 \item{x, object}{An object of class \code{fastsae_hb_area} or \code{summary.fastsae_hb_area}.}
 
 \item{...}{Additional arguments passed to specific methods.}
+
+\item{type}{Character specifying plot type: \code{"importance"} (variable importance bar plot) or \code{"estimates"} (scatter of direct vs MERF estimates).}
 }
 \value{
 \itemize{

@@ -69,4 +69,17 @@
   * Estimates hyperparameter `sigma2_subarea` and Intra-Cluster Correlation (ICC) diagnostic: $\text{ICC}_{\text{nested}} = \sigma_{\text{area}}^2 / (\sigma_{\text{area}}^2 + \sigma_{\text{subarea}}^2)$.
   * Full S3 methods support: `print.fastsaegpu_hb_area()` displays hierarchical levels and ICC.
 
+* Mixed Effects Random Forest Small Area Estimation (`merf_area()`):
+  * Implements semi-parametric Mixed Effects Random Forest (MERF) and Fay-Herriot Random Forest (FH-RF) based on Krennmair & Schmid (2022) *JRSS-C*, Hajjem et al. (2014) *JSCS*, and Bukhari et al. (2025) *IPB University*.
+  * Replaces linear fixed effects $X\beta$ with non-parametric Random Forest ensemble $f(X)$, capturing complex non-linearities and high-order interactions without manual feature engineering.
+  * Fast C++ multithreaded engine powered by `ranger` (with automatic fallback to `randomForest`).
+  * Expectation-Maximization (EM) estimation: alternates between Random Forest fitting on adjusted response $y - u$ and profile log-likelihood optimization of area variance $\sigma_u^2$ with shrinkage $u_i = \gamma_i r_i$.
+  * Parametric Bootstrap MSE (`mse_type = "bootstrap"`): computes empirical bootstrap MSE, RSE, and 95% confidence intervals based on Krennmair & Schmid (2022).
+  * Extensions:
+    * Two-Level Nested MERF (`subarea`): models macro-area $u_j$ and nested sub-area $v_{jk}$ with analytical profile likelihood and ICC diagnostics.
+    * Spatial MERF (`spatial = W`): models spatial autoregressive SAR error correlation $\rho$ on area random effects.
+    * GVF Variance Smoothing (`smooth_vardir = TRUE`): integrates with `gvf_smooth()` to stabilize noisy direct sampling variances before forest training.
+    * Benchmarking & Calibration: full interoperability with `benchmark()` and `benchmark_sae()`.
+  * S3 methods: `print()`, `summary()`, `plot()` (supporting `"importance"` and `"estimates"`), `coef()`, `fitted()`, `residuals()`.
+
 
