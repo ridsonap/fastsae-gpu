@@ -58,6 +58,15 @@ print.fastsae_hb_area <- function(x, ...) {
   cli::cli_text("{.strong Backend}: NumPyro / JAX on {.val {x$device}}")
   cli::cli_text("{.strong Family}: {toupper(x$family)}")
   cli::cli_text("{.strong Spatial}: {toupper(x$spatial)} | {.strong Temporal}: {toupper(x$temporal)} | {.strong Interaction}: {toupper(x$st_interaction)}")
+  if (identical(x$prior_beta, "horseshoe")) {
+    cli::cli_text("{.strong Prior Beta}: Horseshoe (Finnish Regularized Sparse Shrinkage)")
+  }
+  if (isTRUE(x$robust)) {
+    cli::cli_text("{.strong Random Effects}: Robust Student-t (Heavy-Tailed Outlier Resistance)")
+  }
+  if (isTRUE(x$smooth_vardir) && !is.null(x$gvf)) {
+    cli::cli_text("{.strong GVF Smoothing}: ACTIVE [{toupper(x$gvf$method)} | R2: {round(x$gvf$r_squared, 4)}]")
+  }
   if (isTRUE(x$benchmarked) && !is.null(x$benchmark_info)) {
     type_str <- if (x$benchmark_info$type == "self") "Self-Benchmarking (Direct Survey)" else "External Benchmarking"
     cli::cli_text("{.strong Benchmarking}: ACTIVE [{type_str} | Method: {toupper(x$benchmark_info$method)} | Target: {round(x$benchmark_info$target, 5)}]")
@@ -68,6 +77,15 @@ print.fastsae_hb_area <- function(x, ...) {
     # Print standard 4 columns to avoid printCoefmat distortion
     cols_to_print <- intersect(c("beta", "std.error", "zvalue", "pvalue"), names(x$estcoef))
     stats::printCoefmat(as.matrix(x$estcoef[, cols_to_print, drop = FALSE]), signif.stars = TRUE, ...)
+    if ("shrinkage_factor" %in% names(x$estcoef) && nrow(x$estcoef) > 1) {
+      cli::cli_alert_info("Horseshoe shrinkage weights kappa_j (1 = noise pruned, 0 = signal retained):")
+      sw_df <- data.frame(
+        Variable = rownames(x$estcoef)[-1],
+        Shrinkage = x$estcoef$shrinkage_factor[-1],
+        Signal_Retained = paste0(round((1 - x$estcoef$shrinkage_factor[-1]) * 100, 1), "%")
+      )
+      print(sw_df, row.names = FALSE)
+    }
   }
   
   if (!is.null(x$hyperpar) && nrow(x$hyperpar) > 0) {

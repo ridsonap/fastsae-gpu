@@ -45,3 +45,20 @@
   * Full S3 methods: `print()`, `summary()`, and `plot()` with ggplot2 diagnostic visualization.
   * Empirically validated on finite population simulation: external benchmarking eliminates aggregate national bias to 0.0000% and reduces both domain-level Absolute Relative Bias (ARB) and RRMSE.
 
+* Advanced Methodological SAE Enhancements (Features A, B, C):
+  * **Feature A: Generalized Variance Functions (GVF) Smoothing (`gvf_smooth()` & `smooth_vardir = TRUE`):**
+    * Implements variance smoothing based on Wolter (2007), Otto & Bell (1995), and Rivest & Vandal (2003) to stabilize noisy direct sampling variances (`vardir`) and prevent artificial over-shrinkage.
+    * Supports `log_linear` (with log-normal mean expectation correction), `power`, `ratio` (CV-squared), and `loess` smoothing.
+    * S3 methods: `print.fastsaegpu_gvf()` and `plot.fastsaegpu_gvf()`.
+  * **Feature B: Regularized Horseshoe Prior (`prior_beta = "horseshoe"`):**
+    * Implements Finnish Regularized Horseshoe prior (Carvalho et al. 2010; Piironen & Vehtari 2017) in NumPyro/JAX for high-dimensional sparse covariates.
+    * Unpenalized weakly informative normal intercept with Half-Cauchy local shrinkage and Inverse-Gamma slab.
+    * Provides variable-specific shrinkage weights $\kappa_j \in [0, 1]$ directly in `estcoef` table (demonstrated 95-97.5% pruning of pure noise covariates in simulation).
+  * **Feature C: Heavy-Tailed Student-$t$ Random Effects (`robust = TRUE`):**
+    * Implements outlier-robust area random effects based on Bell & Huang (2006) and Gershunskaya & Lahiri (2018) using non-centered Student-$t$ innovations with estimated degrees of freedom $\nu_u \sim \mathcal{U}(2.5, 30.0)$.
+    * Empirically shown to achieve lowest outlier domain error (ARB 4.29% & RRMSE 5.39%) by preventing localized regional shocks from dragging surrounding areas.
+  * **Empirical Simulation Study (`benchmarks/simulate_advanced_features.R`):**
+    * Comprehensive study across 50 domains, 15 covariates (3 signal, 12 noise), 4 outlier domains, and noisy variances.
+    * Demonstrates that Full Synergy (A + B + C + Benchmarking) yields the lowest overall error (ARB 11.51% vs 13.18% direct, RRMSE 32.14% vs 39.56% direct — a 19% relative error reduction).
+
+

@@ -109,7 +109,9 @@ def fit_numpyro_hb(
     benchmark=False,
     benchmark_weights=None,
     benchmark_target=None,
-    benchmark_method="logit"
+    benchmark_method="logit",
+    prior_beta="normal",
+    robust=False
 ):
     jax, jnp, numpyro, dist, MCMC, NUTS, init_to_median, dev_str = init_jax_environment(device)
 
@@ -153,30 +155,57 @@ def fit_numpyro_hb(
 
     def model():
         # Regression coefficients
-        # Use scale 2.5 for logit-link models (beta, binomial) to prevent sigmoid gradient saturation; 10.0 for others
         beta_scale = 2.5 if family in ("beta", "binomial") else 10.0
-        beta = numpyro.sample("beta", dist.Normal(0.0, beta_scale).expand([P]))
+        if prior_beta == "horseshoe" and P > 1:
+            # Regularized Horseshoe (Finnish Horseshoe) prior (Carvalho et al. 2010; Piironen & Vehtari 2017)
+            # Unpenalized weakly informative normal intercept
+            beta_0 = numpyro.sample("beta_0", dist.Normal(0.0, beta_scale))
+            
+            # Penalized slope coefficients
+            P_slopes = P - 1
+            z_beta = numpyro.sample("z_beta", dist.Normal(0.0, 1.0).expand([P_slopes]))
+            lambda_beta = numpyro.sample("lambda_beta", dist.HalfCauchy(1.0).expand([P_slopes]))
+            tau_hs = numpyro.sample("tau_hs", dist.HalfCauchy(1.0))
+            c2_hs = numpyro.sample("c2_hs", dist.InverseGamma(2.0, 8.0))
+            
+            lambda_tilde = (jnp.sqrt(c2_hs) * lambda_beta) / jnp.sqrt(c2_hs + (tau_hs ** 2) * (lambda_beta ** 2))
+            beta_slopes = z_beta * tau_hs * lambda_tilde
+            beta = jnp.concatenate([beta_0[None], beta_slopes])
+            numpyro.deterministic("beta", beta)
+            numpyro.deterministic("tau_horseshoe", tau_hs)
+            kappa = 1.0 / (1.0 + (tau_hs * lambda_beta) ** 2)
+            numpyro.deterministic("kappa_shrinkage", kappa)
+        else:
+            beta = numpyro.sample("beta", dist.Normal(0.0, beta_scale).expand([P]))
         linpred_fixed = jnp.dot(X_jnp, beta)
 
-        # 1. Spatial Random Effect
+        # 1. Spatial / Domain Random Effect
         u_spatial = jnp.zeros(D)
+        
+        # Base random effect distribution (Gaussian vs Robust Student-t)
+        if robust:
+            nu_u = numpyro.sample("nu_u", dist.Uniform(2.5, 30.0))
+            dist_rand = dist.StudentT(df=nu_u, loc=0.0, scale=1.0)
+        else:
+            dist_rand = dist.Normal(0.0, 1.0)
+
         # Avoid double-counting spatial field if separable spatio-temporal structure is active
         if st_interaction != "separable":
             if spatial == "none":
                 sigma_s = numpyro.sample("sigma_s", dist.HalfNormal(1.0))
-                z_s = numpyro.sample("z_s", dist.Normal(0.0, 1.0).expand([D]))
+                z_s = numpyro.sample("z_s", dist_rand.expand([D]))
                 u_spatial = sigma_s * z_s
                 numpyro.deterministic("sigma2_u", sigma_s ** 2)
             elif spatial == "besag":
                 sigma_s = numpyro.sample("sigma_s", dist.HalfNormal(1.0))
-                z_icar = numpyro.sample("z_icar", dist.Normal(0.0, 1.0).expand([icar_rank]))
+                z_icar = numpyro.sample("z_icar", dist_rand.expand([icar_rank]))
                 u_spatial = sigma_s * jnp.dot(icar_basis, z_icar)
                 numpyro.deterministic("sigma2_u", sigma_s ** 2)
             elif spatial == "bym":
                 sigma_s = numpyro.sample("sigma_s", dist.HalfNormal(1.0))
                 sigma_iid = numpyro.sample("sigma_iid", dist.HalfNormal(1.0))
-                z_icar = numpyro.sample("z_icar", dist.Normal(0.0, 1.0).expand([icar_rank]))
-                z_iid = numpyro.sample("z_iid", dist.Normal(0.0, 1.0).expand([D]))
+                z_icar = numpyro.sample("z_icar", dist_rand.expand([icar_rank]))
+                z_iid = numpyro.sample("z_iid", dist_rand.expand([D]))
                 u_spatial = sigma_s * jnp.dot(icar_basis, z_icar) + sigma_iid * z_iid
                 numpyro.deterministic("sigma2_spatial", sigma_s ** 2)
                 numpyro.deterministic("sigma2_iid", sigma_iid ** 2)
@@ -184,8 +213,8 @@ def fit_numpyro_hb(
             elif spatial == "bym2":
                 sigma_s = numpyro.sample("sigma_s", dist.HalfNormal(1.0))
                 phi = numpyro.sample("phi", dist.Beta(1.0, 1.0))
-                z_iid = numpyro.sample("z_iid", dist.Normal(0.0, 1.0).expand([D]))
-                z_icar = numpyro.sample("z_icar", dist.Normal(0.0, 1.0).expand([icar_rank]))
+                z_iid = numpyro.sample("z_iid", dist_rand.expand([D]))
+                z_icar = numpyro.sample("z_icar", dist_rand.expand([icar_rank]))
                 u_icar = jnp.dot(icar_basis, z_icar)
                 u_spatial = sigma_s * (jnp.sqrt(1.0 - phi) * z_iid + jnp.sqrt(phi) * u_icar)
                 numpyro.deterministic("sigma2_u", sigma_s ** 2)
@@ -195,7 +224,7 @@ def fit_numpyro_hb(
                 rho_leroux = numpyro.sample("rho_leroux", dist.Beta(1.0, 1.0))
                 prec_evals = rho_leroux * evals_all + (1.0 - rho_leroux)
                 scale_leroux = 1.0 / jnp.sqrt(jnp.maximum(prec_evals, 1e-6))
-                z_leroux = numpyro.sample("z_leroux", dist.Normal(0.0, 1.0).expand([D]))
+                z_leroux = numpyro.sample("z_leroux", dist_rand.expand([D]))
                 u_spatial = sigma_s * jnp.dot(evecs_all, scale_leroux * z_leroux)
                 numpyro.deterministic("sigma2_u", sigma_s ** 2)
                 numpyro.deterministic("rho_spatial", rho_leroux)
@@ -449,6 +478,14 @@ def fit_numpyro_hb(
         hyperparams["shape_param"] = float(np.mean(samples["shape_param"]))
     if "phi_beta" in samples:
         hyperparams["phi_beta"] = float(np.mean(samples["phi_beta"]))
+    if "nu_u" in samples:
+        hyperparams["nu_degrees_of_freedom"] = float(np.mean(samples["nu_u"]))
+    if "tau_horseshoe" in samples:
+        hyperparams["tau_horseshoe"] = float(np.mean(samples["tau_horseshoe"]))
+
+    shrinkage_weights = None
+    if "kappa_shrinkage" in samples:
+        shrinkage_weights = np.mean(np.asarray(samples["kappa_shrinkage"]), axis=0).tolist()
 
     # Accurate Pointwise Log-Likelihood, WAIC, and DIC
     S_total = hb_samples.shape[0]
@@ -553,5 +590,6 @@ def fit_numpyro_hb(
         "hb_bench_mean": hb_bench_mean,
         "hb_bench_sd": hb_bench_sd,
         "hb_ci_lower_bench": hb_bench_ci_lower,
-        "hb_ci_upper_bench": hb_bench_ci_upper
+        "hb_ci_upper_bench": hb_bench_ci_upper,
+        "shrinkage_weights": shrinkage_weights
     }

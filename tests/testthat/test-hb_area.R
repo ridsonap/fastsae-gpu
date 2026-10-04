@@ -386,3 +386,89 @@ test_that("hb_area in-model self-benchmarking and external benchmarking work acc
   expect_equal(hb_ext_agg, ext_target, tolerance = 1e-5)
 })
 
+test_that("hb_area advanced features (Horseshoe, Student-t robust, GVF smoothing) work properly", {
+  skip_if_not(check_numpyro_available(), "NumPyro/JAX not available")
+
+  set.seed(123)
+  D <- 15
+  # True signal x1, pure noise x2, x3
+  x1 <- rnorm(D)
+  x2 <- rnorm(D)
+  x3 <- rnorm(D)
+  u_outlier <- rnorm(D, sd = 0.2)
+  u_outlier[1] <- 3.5 # Severe localized outlier domain
+  n_sample <- sample(20:50, D, replace = TRUE)
+  vardir_raw <- (0.25 / n_sample) * rlnorm(D, 0, 0.4)
+  y <- 1.0 + 1.5 * x1 + 0.0 * x2 + 0.0 * x3 + u_outlier + rnorm(D, sd = sqrt(vardir_raw))
+
+  df <- data.frame(y = y, x1 = x1, x2 = x2, x3 = x3, vardir = vardir_raw, n = n_sample)
+
+  # 1. Test Regularized Horseshoe Prior (Feature B)
+  fit_hs <- hb_area(
+    y ~ x1 + x2 + x3,
+    data = df,
+    vardir = "vardir",
+    family = "gaussian",
+    prior_beta = "horseshoe",
+    warmup = 100L,
+    samples = 150L,
+    chains = 1L,
+    device = "cpu",
+    print_result = FALSE
+  )
+
+  expect_s3_class(fit_hs, "fastsae_hb_area")
+  expect_equal(fit_hs$prior_beta, "horseshoe")
+  expect_true("tau_horseshoe" %in% fit_hs$hyperpar$Parameter)
+  expect_true("shrinkage_factor" %in% names(fit_hs$estcoef))
+  expect_equal(nrow(fit_hs$estcoef), 4) # Intercept + 3 slopes
+  # Signal x1 should have lower shrinkage (closer to 0) than noise x2/x3
+  expect_true(fit_hs$estcoef["x1", "shrinkage_factor"] < fit_hs$estcoef["x2", "shrinkage_factor"] ||
+              fit_hs$estcoef["x1", "shrinkage_factor"] < fit_hs$estcoef["x3", "shrinkage_factor"])
+
+  # 2. Test Robust Student-t Random Effects (Feature C)
+  fit_rob <- hb_area(
+    y ~ x1,
+    data = df,
+    vardir = "vardir",
+    family = "gaussian",
+    robust = TRUE,
+    warmup = 100L,
+    samples = 150L,
+    chains = 1L,
+    device = "cpu",
+    print_result = FALSE
+  )
+
+  expect_s3_class(fit_rob, "fastsae_hb_area")
+  expect_true(isTRUE(fit_rob$robust))
+  expect_true("nu_degrees_of_freedom" %in% fit_rob$hyperpar$Parameter)
+  nu_val <- fit_rob$hyperpar$Estimate[fit_rob$hyperpar$Parameter == "nu_degrees_of_freedom"]
+  expect_true(nu_val >= 2.5 && nu_val <= 30.0)
+
+  # 3. Test GVF Smoothing within hb_area (Feature A)
+  fit_gvf <- hb_area(
+    y ~ x1,
+    data = df,
+    vardir = "vardir",
+    family = "gaussian",
+    smooth_vardir = TRUE,
+    gvf_method = "log_linear",
+    warmup = 100L,
+    samples = 150L,
+    chains = 1L,
+    device = "cpu",
+    print_result = FALSE
+  )
+
+  expect_s3_class(fit_gvf, "fastsae_hb_area")
+  expect_true(isTRUE(fit_gvf$smooth_vardir))
+  expect_s3_class(fit_gvf$gvf, "fastsaegpu_gvf")
+  expect_true("vardir_raw" %in% names(fit_gvf$df_hb))
+  expect_false(all(fit_gvf$df_hb$vardir == fit_gvf$df_hb$vardir_raw))
+
+  # 4. Print method executes cleanly
+  expect_no_error(print(fit_hs))
+})
+
+

@@ -18,6 +18,14 @@
 #' @param benchmark_target Target benchmark value. If NULL (default), performs self-benchmarking
 #'   using the survey-weighted direct total.
 #' @param benchmark_method Calibration method: "logit", "optimal", "ratio", or "difference".
+#' @param prior_beta Regression prior distribution: \code{"normal"} (default) or \code{"horseshoe"}
+#'   for sparse high-dimensional shrinkage (Carvalho et al. 2010; Piironen & Vehtari 2017).
+#' @param robust Logical: whether to use heavy-tailed Student-t random effects to protect against
+#'   outlier domains (Bell & Huang 2006; Gershunskaya & Lahiri 2018) (default FALSE).
+#' @param smooth_vardir Logical: whether to automatically smooth direct sampling variances using
+#'   Generalized Variance Functions (GVF) before estimation (default FALSE).
+#' @param gvf_method GVF smoothing method if \code{smooth_vardir = TRUE}: \code{"log_linear"} (default),
+#'   \code{"power"}, \code{"ratio"}, or \code{"loess"}.
 #' @param warmup Number of MCMC warmup iterations (default 500).
 #' @param samples Number of MCMC post-warmup samples (default 1000).
 #' @param chains Number of parallel MCMC chains on GPU (default 2).
@@ -68,6 +76,10 @@ hb_area <- function(
   benchmark_weights = NULL,
   benchmark_target = NULL,
   benchmark_method = c("logit", "optimal", "ratio", "difference"),
+  prior_beta = c("normal", "horseshoe"),
+  robust = FALSE,
+  smooth_vardir = FALSE,
+  gvf_method = c("log_linear", "power", "ratio", "loess"),
   warmup = 500L,
   samples = 1000L,
   chains = 2L,
@@ -83,6 +95,8 @@ hb_area <- function(
   st_interaction <- match.arg(tolower(st_interaction), choices = c("none", "separable", "domain-specific", "type1", "type2", "type3", "type4"))
   device <- match.arg(tolower(device), choices = c("auto", "metal", "cuda", "cpu"))
   benchmark_method <- match.arg(tolower(benchmark_method), choices = c("logit", "optimal", "ratio", "difference"))
+  prior_beta <- match.arg(tolower(prior_beta), choices = c("normal", "horseshoe"))
+  gvf_method <- match.arg(tolower(gvf_method), choices = c("log_linear", "power", "ratio", "loess"))
 
   # Automatically configure JAX backend platform before python initializes
   old_plat <- Sys.getenv("JAX_PLATFORMS", unset = NA)
@@ -141,6 +155,27 @@ hb_area <- function(
   vardir_vec <- if (!is.null(vardir)) as.numeric(.get_variable(data, vardir)) else NULL
   trials_vec <- if (!is.null(trials)) as.numeric(.get_variable(data, trials)) else NULL
   exposure_vec <- if (!is.null(exposure)) as.numeric(.get_variable(data, exposure)) else NULL
+
+  # 2b. GVF Smoothing for sampling variances (Feature A: Wolter 2007, Otto & Bell 1995)
+  gvf_obj <- NULL
+  if (isTRUE(smooth_vardir)) {
+    if (is.null(vardir_vec)) {
+      cli::cli_abort("When {.code smooth_vardir = TRUE}, {.arg vardir} must be provided.")
+    }
+    n_for_gvf <- NULL
+    if (!is.null(trials_vec)) {
+      n_for_gvf <- trials_vec
+    } else {
+      n_candidates <- c("n", "samp_size", "sample_size", "size", "N_sample")
+      found_n <- intersect(n_candidates, names(data))
+      if (length(found_n) > 0) {
+        n_for_gvf <- as.numeric(data[[found_n[1]]])
+      }
+    }
+    cli::cli_alert_info("Applying Generalized Variance Function (GVF) smoothing ({gvf_method})...")
+    gvf_obj <- gvf_smooth(y = y_raw, vardir = vardir_vec, n = n_for_gvf, method = gvf_method)
+    vardir_vec <- gvf_obj$vardir_smooth
+  }
 
   # Validate response data by likelihood family
   y <- y_raw
@@ -245,7 +280,9 @@ hb_area <- function(
     benchmark = isTRUE(benchmark),
     benchmark_weights = bm_weights_vec,
     benchmark_target = if (!is.null(benchmark_target)) as.numeric(benchmark_target) else NULL,
-    benchmark_method = benchmark_method
+    benchmark_method = benchmark_method,
+    prior_beta = prior_beta,
+    robust = isTRUE(robust)
   )
   elapsed <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
   cli::cli_alert_success("Sampling completed in {round(elapsed, 2)} seconds.")
@@ -265,6 +302,15 @@ hb_area <- function(
     ci_upper = beta_ci_upper,
     row.names = coef_names
   )
+
+  if (prior_beta == "horseshoe" && !is.null(fit_py$shrinkage_weights)) {
+    sw <- as.numeric(fit_py$shrinkage_weights)
+    if (length(sw) == (length(coef_names) - 1)) {
+      estcoef$shrinkage_factor <- c(0, round(sw, 4))
+    } else if (length(sw) == length(coef_names)) {
+      estcoef$shrinkage_factor <- round(sw, 4)
+    }
+  }
 
   hb_pred <- as.numeric(fit_py$hb_mean)
   hb_sd <- as.numeric(fit_py$hb_sd)
@@ -309,6 +355,9 @@ hb_area <- function(
   if (!is.null(vardir_vec)) {
     df_hb$vardir <- vardir_vec
   }
+  if (!is.null(gvf_obj)) {
+    df_hb$vardir_raw <- gvf_obj$vardir_raw
+  }
   if (!is.null(trials_vec) && family == "binomial") {
     df_hb$trials <- trials_vec
     df_hb$estimated_total <- hb_pred * trials_vec
@@ -339,12 +388,15 @@ hb_area <- function(
 
   # Format model string label
   model_label <- paste0("HB-", toupper(family), " (NumPyro GPU)")
-  if (spatial != "none" || temporal != "none") {
-    comps <- c()
-    if (spatial != "none") comps <- c(comps, toupper(spatial))
-    if (temporal != "none") comps <- c(comps, toupper(temporal))
-    if (st_interaction != "none") comps <- c(comps, paste0("ST:", toupper(st_interaction)))
-    model_label <- paste0(model_label, " [", paste(comps, collapse = " + "), "]")
+  enhancements <- c()
+  if (spatial != "none") enhancements <- c(enhancements, toupper(spatial))
+  if (temporal != "none") enhancements <- c(enhancements, toupper(temporal))
+  if (st_interaction != "none") enhancements <- c(enhancements, paste0("ST:", toupper(st_interaction)))
+  if (prior_beta == "horseshoe") enhancements <- c(enhancements, "Horseshoe")
+  if (isTRUE(robust)) enhancements <- c(enhancements, "Student-t")
+  if (isTRUE(smooth_vardir)) enhancements <- c(enhancements, paste0("GVF:", toupper(gvf_method)))
+  if (length(enhancements) > 0) {
+    model_label <- paste0(model_label, " [", paste(enhancements, collapse = " + "), "]")
   }
 
   res <- list(
@@ -379,6 +431,11 @@ hb_area <- function(
       weights = bm_weights_vec,
       type = if (is.null(benchmark_target)) "self" else "external"
     ) else NULL,
+    prior_beta = prior_beta,
+    robust = isTRUE(robust),
+    smooth_vardir = isTRUE(smooth_vardir),
+    gvf = gvf_obj,
+    shrinkage_weights = fit_py$shrinkage_weights,
     data = data,
     call = call_matched
   )

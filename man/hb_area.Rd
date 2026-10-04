@@ -22,6 +22,10 @@ hb_area(
   benchmark_weights = NULL,
   benchmark_target = NULL,
   benchmark_method = c("logit", "optimal", "ratio", "difference"),
+  prior_beta = c("normal", "horseshoe"),
+  robust = FALSE,
+  smooth_vardir = FALSE,
+  gvf_method = c("log_linear", "power", "ratio", "loess"),
   warmup = 500L,
   samples = 1000L,
   chains = 2L,
@@ -65,6 +69,18 @@ hb_area(
 using the survey-weighted direct total.}
 
 \item{benchmark_method}{Calibration method: "logit", "optimal", "ratio", or "difference".}
+
+\item{prior_beta}{Regression prior distribution: \code{"normal"} (default) or \code{"horseshoe"}
+for sparse high-dimensional shrinkage (Carvalho et al. 2010; Piironen & Vehtari 2017).}
+
+\item{robust}{Logical: whether to use heavy-tailed Student-t random effects to protect against
+outlier domains (Bell & Huang 2006; Gershunskaya & Lahiri 2018) (default FALSE).}
+
+\item{smooth_vardir}{Logical: whether to automatically smooth direct sampling variances using
+Generalized Variance Functions (GVF) before estimation (default FALSE).}
+
+\item{gvf_method}{GVF smoothing method if \code{smooth_vardir = TRUE}: \code{"log_linear"} (default),
+\code{"power"}, \code{"ratio"}, or \code{"loess"}.}
 
 \item{warmup}{Number of MCMC warmup iterations (default 500).}
 
