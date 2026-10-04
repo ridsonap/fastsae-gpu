@@ -139,3 +139,107 @@ residuals.fastsae_hb_area <- function(object, ...) {
   }
   NULL
 }
+
+
+#' Methods for fastsaegpu_benchmark objects
+#'
+#' Print, summarize, and plot benchmarked small area estimates.
+#'
+#' @param x,object An object of class \code{fastsaegpu_benchmark}.
+#' @param ... Additional arguments passed to methods.
+#' @return
+#' \itemize{
+#'   \item \code{print}: Invisibly returns \code{x}.
+#'   \item \code{summary}: A list containing calibration summary statistics.
+#'   \item \code{plot}: A \code{ggplot2} object visualizing the benchmark adjustment.
+#' }
+#' @name fastsaegpu_benchmark-methods
+NULL
+
+#' @rdname fastsaegpu_benchmark-methods
+#' @rdname fastsaegpu_benchmark-methods
+#' @export
+print.fastsaegpu_benchmark <- function(x, ...) {
+  target_mode <- attr(x, "target_mode") %||% "Benchmarking"
+  method <- attr(x, "method") %||% "optimal"
+  type <- attr(x, "type") %||% "mean"
+  
+  cat("== Benchmarked Small Area Estimation ==========================================\n")
+  cat(sprintf("Mode: %s\n", target_mode))
+  cat(sprintf("Method: %s (%s)\n\n", toupper(method), type))
+  
+  verif <- attr(x, "verification")
+  if (!is.null(verif) && length(verif) > 0) {
+    cat("-- Calibration Verification: --\n")
+    for (v in verif) {
+      status_icon <- if (v$discrepancy < 1e-6) "[OK]" else "[MISMATCH]"
+      cat(sprintf("%s Target: %.5f | Benchmarked Sum: %.5f (Discrepancy: %s)\n",
+                  status_icon, v$target, v$benchmarked_sum, format(v$discrepancy, scientific = TRUE)))
+    }
+    cat("\n")
+  }
+  
+  cat("-- Adjustment Statistics: --\n")
+  adj <- x$adjustment
+  rel_adj <- x$rel_adjustment_pct
+  cat(sprintf("Absolute Adjustment: Min = %.5f, Mean = %.5f, Max = %.5f\n", min(adj), mean(adj), max(adj)))
+  cat(sprintf("Relative Adjustment (%%): Min = %.2f%%, Mean = %.2f%%, Max = %.2f%%\n\n",
+              min(rel_adj, na.rm = TRUE), mean(rel_adj, na.rm = TRUE), max(rel_adj, na.rm = TRUE)))
+  
+  cat("-- Estimates (First 6 domains): --\n")
+  print(utils::head(as.data.frame(x), 6), ...)
+  if (nrow(x) > 6) {
+    cat(sprintf("... and %d more rows.\n", nrow(x) - 6))
+  }
+  invisible(x)
+}
+
+#' @rdname fastsaegpu_benchmark-methods
+#' @export
+summary.fastsaegpu_benchmark <- function(object, ...) {
+  structure(
+    list(
+      target_mode = attr(object, "target_mode"),
+      method = attr(object, "method"),
+      type = attr(object, "type"),
+      verification = attr(object, "verification"),
+      adj_summary = summary(object$adjustment),
+      rel_adj_summary = summary(object$rel_adjustment_pct),
+      n_domains = nrow(object)
+    ),
+    class = "summary.fastsaegpu_benchmark"
+  )
+}
+
+#' @rdname fastsaegpu_benchmark-methods
+#' @export
+print.summary.fastsaegpu_benchmark <- function(x, ...) {
+  cat("== Summary of Benchmarked SAE Calibration =====================================\n")
+  cat(sprintf("Total Domains: %d\n", x$n_domains))
+  cat(sprintf("Calibration Method: %s\n\n", toupper(x$method)))
+  cat("-- Absolute Adjustment: --\n")
+  print(x$adj_summary)
+  cat("\n-- Relative Adjustment (%): --\n")
+  print(x$rel_adj_summary)
+  invisible(x)
+}
+
+#' @rdname fastsaegpu_benchmark-methods
+#' @export
+plot.fastsaegpu_benchmark <- function(x, ...) {
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    cli::cli_abort("Package {.pkg ggplot2} is required to plot benchmarked objects.")
+  }
+  df <- as.data.frame(x)
+  p <- ggplot2::ggplot(df, ggplot2::aes(x = original, y = benchmarked)) +
+    ggplot2::geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray50") +
+    ggplot2::geom_point(color = "#1f77b4", size = 2.5, alpha = 0.8) +
+    ggplot2::theme_minimal() +
+    ggplot2::labs(
+      title = "Small Area Estimation: Original vs Benchmarked",
+      subtitle = paste0("Method: ", toupper(attr(x, "method")), " (", attr(x, "target_mode"), ")"),
+      x = "Original Model Estimate (hb)",
+      y = "Benchmarked / Calibrated Estimate"
+    )
+  p
+}

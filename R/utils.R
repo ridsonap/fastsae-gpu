@@ -1,4 +1,4 @@
-utils::globalVariables(c(".data"))
+utils::globalVariables(c(".data", "original", "benchmarked"))
 
 #' Extract variable from data frame or use as-is
 #' @noRd

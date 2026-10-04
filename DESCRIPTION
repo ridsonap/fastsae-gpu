@@ -21,6 +21,7 @@ Imports:
     utils
 Suggests:
     covr,
+    ggplot2,
     reticulate,
     spdep,
     testthat (>= 3.0.0),

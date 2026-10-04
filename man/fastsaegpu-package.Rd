@@ -2,8 +2,8 @@
 % Please edit documentation in R/fastsaegpu-package.R
 \docType{package}
 \name{fastsaegpu-package}
-\alias{fastsaegpu}
 \alias{fastsaegpu-package}
+\alias{fastsaegpu}
 \title{fastsaegpu: GPU-Accelerated Hierarchical Bayesian Small Area Estimation}
 \description{
 Hierarchical Bayesian area-level Small Area Estimation (SAE) with
@@ -19,8 +19,15 @@ Useful links:
   \item \url{https://github.com/ridsonap/fastsae-gpu}
   \item Report bugs at \url{https://github.com/ridsonap/fastsae-gpu/issues}
 }
+
 }
 \author{
 \strong{Maintainer}: Ridson Al Farizal P \email{alfrzlp@gmail.com}
+
+Authors:
+\itemize{
+  \item Ridson Al Farizal P \email{alfrzlp@gmail.com}
+}
+
 }
 \keyword{internal}

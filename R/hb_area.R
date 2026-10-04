@@ -324,6 +324,7 @@ hb_area <- function(
     device = fit_py$device_used,
     elapsed_seconds = elapsed,
     convergence = TRUE,
+    data = data,
     call = call_matched
   )
   class(res) <- c("fastsae_hb_area", "fastsae")

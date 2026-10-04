@@ -71,4 +71,3 @@ coef(obj)
 fitted(obj)
 residuals(obj)
 }
-
