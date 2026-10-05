@@ -17,6 +17,7 @@ Depends:
 Imports:
     cli,
     Matrix,
+    reticulate,
     stats,
     utils
 Suggests:
@@ -24,7 +25,6 @@ Suggests:
     ggplot2,
     randomForest,
     ranger,
-    reticulate,
     spdep,
     testthat (>= 3.0.0),
     xml2

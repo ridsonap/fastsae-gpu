@@ -65,12 +65,14 @@ jobs:
             any::randomForest
             any::spdep
             any::ggplot2
+            any::reticulate
+            any::xml2
           needs: check
 
       - uses: r-lib/actions/check-r-package@v2
         with:
           args: 'c("--no-manual", "--as-cran")'
-          error-on: '"warning"'
+          error-on: '"error"'
           check-dir: '"check"'
           upload-snapshots: true
 
