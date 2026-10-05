@@ -807,7 +807,11 @@ merf_area <- function(formula,
     }
 
     # Parallel when possible (mclapply on Unix, else serial)
-    if (.Platform$OS.type == "unix" && B >= 4 && requireNamespace("parallel", quietly = TRUE)) {
+    # Respect CRAN check limit: _R_CHECK_LIMIT_CORES_ / R_CHECK_LIMIT_CORES
+    use_parallel <- .Platform$OS.type == "unix" && B >= 4 && requireNamespace("parallel", quietly = TRUE) &&
+      identical(Sys.getenv("_R_CHECK_LIMIT_CORES_", unset = ""), "") &&
+      identical(Sys.getenv("R_CHECK_LIMIT_CORES", unset = ""), "")
+    if (use_parallel) {
       nc <- min(parallel::detectCores(logical = FALSE), B, 4L)
       boot_list <- parallel::mclapply(seq_len(B), .one_boot, mc.cores = nc)
       boot_sq_err <- do.call(cbind, boot_list)
