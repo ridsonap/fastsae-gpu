@@ -94,7 +94,7 @@ Generalized Variance Functions (GVF) before estimation (default FALSE).}
 
 \item{chains}{Number of parallel MCMC chains on GPU (default 2).}
 
-\item{device}{Target hardware: "auto", "metal" (Apple Silicon), "cuda" (NVIDIA), or "cpu".}
+\item{device}{Target hardware: "auto" (CUDA on Linux/Windows, CPU on macOS for stability; use "metal" explicitly for Apple Silicon GPU), "metal" (Apple Silicon), "cuda" (NVIDIA), or "cpu". Note: \code{device="metal"} on macOS may fall back to CPU if JAX Metal shaders fail (see Details).}
 
 \item{seed}{Random seed for MCMC reproducibility (default 42).}
 

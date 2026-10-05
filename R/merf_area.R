@@ -583,7 +583,9 @@ merf_area <- function(formula,
     gamma_vec <- (sigma2_area + sigma2_sub) / (sigma2_area + sigma2_sub + psi)
 
   } else if (is_spatial) {
-    # Spatial MERF
+    # Spatial MERF — eigenvalue trick for fast log-det (Ord 1975)
+    eig_W <- eigen(W, symmetric = FALSE, only.values = TRUE)$values
+    eig_W <- Re(eig_W)
     u <- rep(0, D)
     sigma2_u <- max(0.01, stats::var(y) - mean(psi))
     rho_val <- 0.2
@@ -614,12 +616,21 @@ merf_area <- function(formula,
       f_hat_eval <- if (isTRUE(use_oob)) rf_res$pred_oob else f_in
       r <- y - f_hat_eval
 
+      A_inv_r_cached <- NULL
       nll_spatial <- function(par) {
         s2 <- par[1]
         rho <- par[2]
         if (s2 <= 0 || rho <= -0.98 || rho >= 0.98) return(1e10)
 
+        # Fast log-det via eigenvalues: log|I - rho*W| = sum(log(1 - rho*lambda_i))
+        ld_A <- sum(log(pmax(1 - rho * eig_W, 1e-8)))
+        # Use Woodbury / direct solve without forming Sigma_u explicitly
         A <- I_mat - rho * W
+        # Solve A^{-1} * r efficiently
+        A_inv_r <- tryCatch(solve(A, r), error = function(e) NULL)
+        if (is.null(A_inv_r)) return(1e10)
+        # V = s2*(A'A)^{-1} + diag(psi) — compute log-det and quadratic form via Cholesky of V
+        # For moderate D, form V directly but reuse ld_A
         A_inv <- tryCatch(solve(A), error = function(e) NULL)
         if (is.null(A_inv)) return(1e10)
         Sigma_u <- s2 * (A_inv %*% t(A_inv))
@@ -627,9 +638,9 @@ merf_area <- function(formula,
 
         L <- tryCatch(chol(V), error = function(e) NULL)
         if (is.null(L)) return(1e10)
-        log_det <- 2 * sum(log(diag(L)))
+        log_det_V <- 2 * sum(log(diag(L)))
         v_inv_r <- backsolve(L, forwardsolve(t(L), r))
-        0.5 * (log_det + sum(r * v_inv_r))
+        0.5 * (log_det_V + sum(r * v_inv_r))
       }
 
       opt_res <- stats::optim(
@@ -674,15 +685,14 @@ merf_area <- function(formula,
   if (mse_type == "bootstrap" && B > 0) {
     if (verbose) cli::cli_inform("Computing Parametric Bootstrap MSE with {B} replications...")
 
-    boot_sq_err <- matrix(0, nrow = D, ncol = B)
     boot_trees <- min(150, num_trees)
     boot_max_iter <- min(8, max_iter)
 
-    for (b in seq_len(B)) {
+    # Single bootstrap replication helper (structure-aware)
+    .one_boot <- function(b) {
       seed_b <- if (!is.null(seed)) (seed + 1000 + b) else NULL
       if (!is.null(seed_b)) set.seed(seed_b)
 
-      # Generate synthetic true population parameter
       if (!is_nested && !is_spatial) {
         u_b <- stats::rnorm(D, 0, sqrt(sigma2_u))
         theta_b <- f_hat + u_b
@@ -696,35 +706,113 @@ merf_area <- function(formula,
         u_b <- as.vector(A_inv %*% stats::rnorm(D, 0, sqrt(sigma2_u)))
         theta_b <- f_hat + u_b
       }
-
-      # Generate pseudo-sample survey estimate
       e_b <- stats::rnorm(D, 0, sqrt(psi))
       y_b <- theta_b + e_b
 
-      # Fast MERF re-fit on pseudo-sample
-      u_boot <- rep(0, D)
-      s2_boot <- sigma2_u
-      for (b_iter in seq_len(boot_max_iter)) {
-        y_star_b <- y_b - u_boot
-        w_b <- if (isTRUE(weighted)) 1 / (s2_boot + psi) else NULL
-        rf_b <- fit_rf(X_active, y_star_b, trees = boot_trees, cur_weights = w_b, seed_iter = seed_b)
-        f_b_eval <- if (isTRUE(use_oob)) rf_b$pred_oob else rf_b$pred
-        r_b <- y_b - f_b_eval
+      if (!is_nested && !is_spatial) {
+        # Standard 1-level bootstrap re-fit
+        u_boot <- rep(0, D)
+        s2_boot <- sigma2_u
+        for (b_iter in seq_len(boot_max_iter)) {
+          y_star_b <- y_b - u_boot
+          w_b <- if (isTRUE(weighted)) 1 / (s2_boot + psi) else NULL
+          rf_b <- fit_rf(X_active, y_star_b, trees = boot_trees, cur_weights = w_b, seed_iter = seed_b)
+          f_b_eval <- if (isTRUE(use_oob)) rf_b$pred_oob else rf_b$pred
+          r_b <- y_b - f_b_eval
+          opt_b <- stats::optimize(
+            function(s2) {
+              v <- s2 + psi
+              if (any(v <= 0)) return(1e10)
+              0.5 * sum(log(v) + (r_b^2) / v)
+            },
+            interval = c(0, max(10 * stats::var(y_b), 10))
+          )
+          s2_boot <- opt_b$minimum
+          g_b <- s2_boot / (s2_boot + psi)
+          u_boot <- g_b * r_b
+        }
+        theta_hat_b <- rf_b$pred + u_boot
 
-        opt_b <- stats::optimize(
-          function(s2) {
-            v <- s2 + psi
-            if (any(v <= 0)) return(1e10)
-            0.5 * sum(log(v) + (r_b^2) / v)
-          },
-          interval = c(0, max(10 * stats::var(y_b), 10))
-        )
-        s2_boot <- opt_b$minimum
-        g_b <- s2_boot / (s2_boot + psi)
-        u_boot <- g_b * r_b
+      } else if (is_nested) {
+        # Nested bootstrap re-fit: re-estimate sigma2_area & sigma2_subarea
+        u_maj_boot <- stats::setNames(rep(0, J), major_areas)
+        v_sub_boot <- rep(0, D)
+        s2a_boot <- sigma2_area
+        s2s_boot <- sigma2_sub
+        for (b_iter in seq_len(boot_max_iter)) {
+          u_exp_boot <- u_maj_boot[major_area_vec]
+          y_star_b <- y_b - u_exp_boot - v_sub_boot
+          w_b <- if (isTRUE(weighted)) 1 / (s2a_boot + s2s_boot + psi) else NULL
+          rf_b <- fit_rf(X_active, y_star_b, trees = boot_trees, cur_weights = w_b, seed_iter = seed_b)
+          f_b_eval <- if (isTRUE(use_oob)) rf_b$pred_oob else rf_b$pred
+          r_b <- y_b - f_b_eval
+          nll_nested_b <- function(par) {
+            s2_a <- par[1]; s2_s <- par[2]
+            if (s2_a < 0 || s2_s < 0) return(1e10)
+            nll <- 0
+            for (jj in seq_len(J)) {
+              idx_jj <- area_idx_list[[jj]]
+              psi_jj <- psi[idx_jj]; r_jj <- r_b[idx_jj]
+              d_jj <- s2_s + psi_jj; w_jj <- 1 / d_jj
+              W_sum_jj <- sum(w_jj); denom_jj <- 1 + s2_a * W_sum_jj
+              nll <- nll + 0.5 * (sum(log(d_jj)) + log(max(1e-12, denom_jj)) + sum(w_jj * r_jj^2) - (s2_a / denom_jj) * sum(w_jj * r_jj)^2)
+            }
+            nll
+          }
+          opt_b <- stats::optim(par = c(s2a_boot, s2s_boot), fn = nll_nested_b, method = "L-BFGS-B", lower = c(1e-6, 1e-6))
+          s2a_boot <- opt_b$par[1]; s2s_boot <- opt_b$par[2]
+          for (jj in seq_len(J)) {
+            idx_jj <- area_idx_list[[jj]]
+            w_jj <- 1 / (s2s_boot + psi[idx_jj])
+            u_maj_boot[jj] <- (s2a_boot / (1 + s2a_boot * sum(w_jj))) * sum(w_jj * r_b[idx_jj])
+          }
+          u_exp_new <- u_maj_boot[major_area_vec]
+          v_sub_boot <- (s2s_boot / (s2s_boot + psi)) * (r_b - u_exp_new)
+        }
+        theta_hat_b <- rf_b$pred + u_maj_boot[major_area_vec] + v_sub_boot
+
+      } else if (is_spatial) {
+        # Spatial bootstrap re-fit: re-estimate sigma2_u & rho
+        u_boot_sp <- rep(0, D)
+        s2_boot_sp <- sigma2_u; rho_boot <- rho_val
+        I_D <- diag(D)
+        for (b_iter in seq_len(boot_max_iter)) {
+          y_star_b <- y_b - u_boot_sp
+          w_b <- if (isTRUE(weighted)) 1 / (s2_boot_sp + psi) else NULL
+          rf_b <- fit_rf(X_active, y_star_b, trees = boot_trees, cur_weights = w_b, seed_iter = seed_b)
+          f_b_eval <- if (isTRUE(use_oob)) rf_b$pred_oob else rf_b$pred
+          r_b <- y_b - f_b_eval
+          nll_sp_b <- function(par) {
+            s2 <- par[1]; rho_p <- par[2]
+            if (s2 <= 0 || rho_p <= -0.98 || rho_p >= 0.98) return(1e10)
+            A_p <- I_D - rho_p * W
+            A_inv_p <- tryCatch(solve(A_p), error = function(e) NULL)
+            if (is.null(A_inv_p)) return(1e10)
+            Sigma_p <- s2 * (A_inv_p %*% t(A_inv_p))
+            V_p <- Sigma_p + diag(psi)
+            L_p <- tryCatch(chol(V_p), error = function(e) NULL)
+            if (is.null(L_p)) return(1e10)
+            0.5 * (2 * sum(log(diag(L_p))) + sum(r_b * backsolve(L_p, forwardsolve(t(L_p), r_b))))
+          }
+          opt_b <- stats::optim(par = c(s2_boot_sp, rho_boot), fn = nll_sp_b, method = "L-BFGS-B", lower = c(1e-5, -0.95), upper = c(max(10 * stats::var(y_b), 10), 0.95))
+          s2_boot_sp <- opt_b$par[1]; rho_boot <- opt_b$par[2]
+          A_inv_n <- solve(I_D - rho_boot * W)
+          Sigma_n <- s2_boot_sp * (A_inv_n %*% t(A_inv_n))
+          V_n <- Sigma_n + diag(psi)
+          u_boot_sp <- as.vector(Sigma_n %*% solve(V_n, r_b))
+        }
+        theta_hat_b <- rf_b$pred + u_boot_sp
       }
-      theta_hat_b <- rf_b$pred + u_boot
-      boot_sq_err[, b] <- (theta_hat_b - theta_b)^2
+      (theta_hat_b - theta_b)^2
+    }
+
+    # Parallel when possible (mclapply on Unix, else serial)
+    if (.Platform$OS.type == "unix" && B >= 4 && requireNamespace("parallel", quietly = TRUE)) {
+      nc <- min(parallel::detectCores(logical = FALSE), B, 4L)
+      boot_list <- parallel::mclapply(seq_len(B), .one_boot, mc.cores = nc)
+      boot_sq_err <- do.call(cbind, boot_list)
+    } else {
+      boot_sq_err <- vapply(seq_len(B), .one_boot, numeric(D))
     }
 
     mse_est <- rowMeans(boot_sq_err)

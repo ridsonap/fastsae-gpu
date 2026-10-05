@@ -86,17 +86,30 @@ gvf_smooth <- function(
   if (method == "log_linear") {
     # Wolter (2007) / Otto & Bell (1995)
     # log(vardir) = a0 + a1 * log(y) + a2 * log(1-y) + [a3 * log(n)]
+    # Only valid for proportions y in (0,1); otherwise drop log(1-y) term.
+    is_proportion <- all(y_val > 0 & y_val < 1)
     log_v <- log(v_val)
-    # Clip y safely for logs
-    y_clip <- pmin(pmax(y_val, 1e-4), 1 - 1e-4)
+    y_clip <- pmax(y_val, 1e-4)
     log_y <- log(y_clip)
-    log_1my <- log(1 - y_clip)
-
-    df_mod <- data.frame(log_v = log_v, log_y = log_y, log_1my = log_1my)
-    form <- log_v ~ log_y + log_1my
-    if (!is.null(n_val) && all(n_val > 0)) {
-      df_mod$log_n <- log(n_val)
-      form <- log_v ~ log_y + log_1my + log_n
+    if (is_proportion) {
+      y_clip2 <- pmin(y_clip, 1 - 1e-4)
+      log_1my <- log(1 - y_clip2)
+      df_mod <- data.frame(log_v = log_v, log_y = log_y, log_1my = log_1my)
+      form <- log_v ~ log_y + log_1my
+      if (!is.null(n_val) && all(n_val > 0)) {
+        df_mod$log_n <- log(n_val)
+        form <- log_v ~ log_y + log_1my + log_n
+      }
+    } else {
+      if (any(y_val <= 0 | y_val >= 1)) {
+        cli::cli_alert_warning("log_linear GVF assumes y in (0,1); detected y outside (0,1) -- dropping log(1-y) term.")
+      }
+      df_mod <- data.frame(log_v = log_v, log_y = log_y)
+      form <- log_v ~ log_y
+      if (!is.null(n_val) && all(n_val > 0)) {
+        df_mod$log_n <- log(n_val)
+        form <- log_v ~ log_y + log_n
+      }
     }
 
     fit_lm <- stats::lm(form, data = df_mod)

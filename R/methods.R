@@ -439,6 +439,14 @@ predict.fastsaegpu_merf <- function(object, newdata = NULL, ...) {
     return(object$estimates$merf)
   }
   newdata_df <- as.data.frame(newdata)
+  # Subset to selected_vars if feature screening was active
+  if (!is.null(object$selected_vars)) {
+    missing_vars <- setdiff(object$selected_vars, names(newdata_df))
+    if (length(missing_vars) > 0) {
+      cli::cli_abort("Missing required covariates in {.arg newdata}: {.val {missing_vars}}")
+    }
+    newdata_df <- newdata_df[, object$selected_vars, drop = FALSE]
+  }
   if (object$engine == "ranger") {
     preds <- stats::predict(object$forest, data = newdata_df)$predictions
   } else {

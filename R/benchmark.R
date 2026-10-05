@@ -195,12 +195,16 @@ benchmark.fastsae_hb_area <- function(object,
   # Determine target mode: self-benchmarking vs external
   if (is.null(target) || type_target == "internal") {
     target_mode <- "Self-Benchmarking (Internal Direct Survey Total)"
-    # Derive target internally from direct survey estimate
+    # Derive target internally from direct survey estimate (skip non-sampled NA)
     target_map <- stats::setNames(numeric(length(unique_groups)), unique_groups)
     for (g in unique_groups) {
       idx_g <- which(group_vec == g)
-      w_g <- w_vec[idx_g]
-      y_dir_g <- y_dir[idx_g]
+      valid_g <- !is.na(y_dir[idx_g])
+      if (!any(valid_g)) {
+        cli::cli_abort("No sampled domains (non-NA direct estimates) in group {.val {g}} for self-benchmarking.")
+      }
+      w_g <- w_vec[idx_g][valid_g]
+      y_dir_g <- y_dir[idx_g][valid_g]
       if (type == "mean") {
         target_map[g] <- sum(w_g * y_dir_g) / sum(w_g)
       } else {

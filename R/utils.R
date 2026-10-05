@@ -62,7 +62,8 @@ utils::globalVariables(c(".data", "original", "benchmarked", "Importance", "Vari
   adj_mat <- (W_mat > 0 | t(W_mat) > 0) * 1.0
   diag(adj_mat) <- 0.0
   
-  # Calculate ICAR scaling factor (Riebler et al., 2016)
+  # Calculate ICAR scaling factor + cache full spectral decomposition (Riebler et al., 2016)
+  # Cached eigendecomposition is reused by Python to avoid duplicate O(D^3) eigh
   deg <- rowSums(adj_mat)
   L <- diag(deg) - adj_mat
   eig <- eigen(L, symmetric = TRUE)
@@ -75,6 +76,7 @@ utils::globalVariables(c(".data", "original", "benchmarked", "Importance", "Vari
   } else {
     scale_factor <- 1.0
   }
-  
-  list(adj_mat = adj_mat, scale_factor = scale_factor)
+
+  list(adj_mat = adj_mat, scale_factor = scale_factor,
+       eig_values = eig$values, eig_vectors = eig$vectors)
 }

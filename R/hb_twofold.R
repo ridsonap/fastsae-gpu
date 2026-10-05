@@ -26,7 +26,7 @@
 #' @param warmup Number of MCMC warmup iterations (default 500).
 #' @param samples Number of MCMC post-warmup samples (default 1000).
 #' @param chains Number of parallel MCMC chains (default 2).
-#' @param device Target hardware: "auto", "metal", "cuda", or "cpu".
+#' @param device Target hardware: "auto" (CPU on macOS for stability; use "metal" explicitly for Apple Silicon GPU), "metal", "cuda", or "cpu".
 #' @param seed Random seed (default 42).
 #' @param print_result Logical: print summary upon completion (default TRUE).
 #' @param ... Additional arguments (currently unused).
@@ -106,12 +106,14 @@ hb_twofold <- function(
 
   old_plat <- Sys.getenv("JAX_PLATFORMS", unset = NA)
   on.exit({
-    if (is.na(old_plat)) Sys.unsetenv("JAX_PLATFORMS") else Sys.setenv(JAX_PLATFORMS = old_plat)
+    if (is.na(old_plat) || !nzchar(old_plat)) Sys.unsetenv("JAX_PLATFORMS") else Sys.setenv(JAX_PLATFORMS = old_plat)
   }, add = TRUE)
-  if (device == "cpu" || (device == "auto" && Sys.info()["sysname"] == "Darwin")) {
-    if (Sys.getenv("JAX_PLATFORMS") == "") Sys.setenv(JAX_PLATFORMS = "cpu")
-  } else if (device == "cuda") {
-    if (Sys.getenv("JAX_PLATFORMS") == "") Sys.setenv(JAX_PLATFORMS = "cuda,cpu")
+  if (!nzchar(Sys.getenv("JAX_PLATFORMS"))) {
+    if (device == "cpu" || (device == "auto" && Sys.info()["sysname"] == "Darwin")) {
+      Sys.setenv(JAX_PLATFORMS = "cpu")
+    } else if (device == "cuda") {
+      Sys.setenv(JAX_PLATFORMS = "cuda,cpu")
+    }
   }
 
   if (!is.data.frame(data)) cli::cli_abort("{.arg data} must be a data frame.")

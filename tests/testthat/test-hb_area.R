@@ -324,6 +324,7 @@ test_that("hb_area fits BYM and Leroux spatial models", {
 })
 
 test_that("hb_area in-model self-benchmarking and external benchmarking work accurately", {
+  skip_on_cran()
   skip_if_not(check_numpyro_available(), "NumPyro/JAX not available")
 
   set.seed(42)
@@ -387,6 +388,7 @@ test_that("hb_area in-model self-benchmarking and external benchmarking work acc
 })
 
 test_that("hb_area advanced features (Horseshoe, Student-t robust, GVF smoothing) work properly", {
+  skip_on_cran()
   skip_if_not(check_numpyro_available(), "NumPyro/JAX not available")
 
   set.seed(123)
@@ -472,6 +474,7 @@ test_that("hb_area advanced features (Horseshoe, Student-t robust, GVF smoothing
 })
 
 test_that("hb_area supports two-level nested sub-area SAE models (Torabi & Rao, 2014)", {
+  skip_on_cran()
   skip_if_not(check_numpyro_available(), "NumPyro/JAX not available")
 
   set.seed(42)

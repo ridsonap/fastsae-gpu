@@ -7,10 +7,10 @@
 #' @export
 check_numpyro_available <- function(device = "auto") {
   if (device == "cpu" || (device == "auto" && Sys.info()["sysname"] == "Darwin")) {
-    if (Sys.getenv("JAX_PLATFORMS") == "") {
+    if (!nzchar(Sys.getenv("JAX_PLATFORMS"))) {
       old_plat <- Sys.getenv("JAX_PLATFORMS", unset = NA)
       on.exit({
-        if (is.na(old_plat)) {
+        if (is.na(old_plat) || !nzchar(old_plat)) {
           Sys.unsetenv("JAX_PLATFORMS")
         } else {
           Sys.setenv(JAX_PLATFORMS = old_plat)
@@ -79,7 +79,7 @@ setup_numpyro_env <- function(envname = "r-numpyro-gpu", method = "auto", device
   
   pkgs <- c("numpy", "scipy", "numpyro")
   if (device == "metal") {
-    pkgs <- c(pkgs, "jax==0.5.0", "jaxlib==0.5.0", "jax-metal==0.1.1")
+    pkgs <- c(pkgs, "jax", "jaxlib", "jax-metal")
   } else if (device == "cuda") {
     pkgs <- c(pkgs, "jax[cuda12]")
   } else {

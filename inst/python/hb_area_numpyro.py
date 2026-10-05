@@ -103,6 +103,8 @@ def fit_numpyro_hb(
     st_interaction="none",
     W_adj=None,
     scale_factor=1.0,
+    eig_values=None,
+    eig_vectors=None,
     num_warmup=500,
     num_samples=1000,
     num_chains=2,
@@ -140,14 +142,19 @@ def fit_numpyro_hb(
     exposure_obs = jnp.asarray(exposure_np[obs_idx], dtype=jnp.float32) if exposure_np is not None else None
 
     # Spatial Spectral Decomposition (ICAR & Leroux basis)
+    # Reuse eigendecomposition from R if available to avoid duplicate O(D^3) eigh
     icar_basis = None
     icar_rank = 0
     evals_all = None
     evecs_all = None
     if spatial in ("besag", "bym2", "bym", "leroux") and W_adj is not None:
-        deg = np.sum(W_adj, axis=1)
-        L_spatial = np.diag(deg) - W_adj
-        evals, evecs = np.linalg.eigh(L_spatial)
+        if eig_values is not None and eig_vectors is not None:
+            evals = np.asarray(eig_values, dtype=np.float64)
+            evecs = np.asarray(eig_vectors, dtype=np.float64)
+        else:
+            deg = np.sum(W_adj, axis=1)
+            L_spatial = np.diag(deg) - W_adj
+            evals, evecs = np.linalg.eigh(L_spatial)
         pos = evals > 1e-6
         evals_pos = evals[pos]
         evecs_pos = evecs[:, pos]
@@ -402,18 +409,18 @@ def fit_numpyro_hb(
             
     samples = mcmc.get_samples()
 
-    # Extract posterior statistics
+    # Extract posterior statistics — keep as numpy arrays for zero-copy reticulate transfer
     beta_samples = np.asarray(samples["beta"])
-    beta_mean = np.mean(beta_samples, axis=0).tolist()
-    beta_sd = np.std(beta_samples, axis=0).tolist()
-    beta_ci_lower = np.percentile(beta_samples, 2.5, axis=0).tolist()
-    beta_ci_upper = np.percentile(beta_samples, 97.5, axis=0).tolist()
+    beta_mean = np.mean(beta_samples, axis=0)
+    beta_sd = np.std(beta_samples, axis=0)
+    beta_ci_lower = np.percentile(beta_samples, 2.5, axis=0)
+    beta_ci_upper = np.percentile(beta_samples, 97.5, axis=0)
 
     hb_samples = np.asarray(samples["hb_est"])
-    hb_mean = np.mean(hb_samples, axis=0).tolist()
-    hb_sd = np.std(hb_samples, axis=0).tolist()
-    hb_ci_lower = np.percentile(hb_samples, 2.5, axis=0).tolist()
-    hb_ci_upper = np.percentile(hb_samples, 97.5, axis=0).tolist()
+    hb_mean = np.mean(hb_samples, axis=0)
+    hb_sd = np.std(hb_samples, axis=0)
+    hb_ci_lower = np.percentile(hb_samples, 2.5, axis=0)
+    hb_ci_upper = np.percentile(hb_samples, 97.5, axis=0)
 
     # In-Model Benchmark / Calibration across MCMC sample draws
     benchmarked = False
@@ -466,10 +473,10 @@ def fit_numpyro_hb(
             agg_s = np.sum(hb_samples * w_norm[None, :], axis=1, keepdims=True)
             hb_bench_samples = hb_samples * (actual_target / np.maximum(agg_s, 1e-8))
 
-        hb_bench_mean = np.mean(hb_bench_samples, axis=0).tolist()
-        hb_bench_sd = np.std(hb_bench_samples, axis=0).tolist()
-        hb_bench_ci_lower = np.percentile(hb_bench_samples, 2.5, axis=0).tolist()
-        hb_bench_ci_upper = np.percentile(hb_bench_samples, 97.5, axis=0).tolist()
+        hb_bench_mean = np.mean(hb_bench_samples, axis=0)
+        hb_bench_sd = np.std(hb_bench_samples, axis=0)
+        hb_bench_ci_lower = np.percentile(hb_bench_samples, 2.5, axis=0)
+        hb_bench_ci_upper = np.percentile(hb_bench_samples, 97.5, axis=0)
 
     # Twofold subarea -> area aggregation (Torabi & Rao 2014; Rao & Molina 2015 Ch.8)
     # Area mean: theta_j. = sum_k W_jk * theta_jk, weights normalized per area.
@@ -491,23 +498,23 @@ def fit_numpyro_hb(
             _s = float(np.sum(_w))
             _wn = (_w / _s) if _s > 0 else (np.ones(len(_idx)) / len(_idx))
             area_draws[:, _j] = np.sum(hb_samples[:, _idx] * _wn[None, :], axis=1)
-        area_mean = np.mean(area_draws, axis=0).tolist()
-        area_sd = np.std(area_draws, axis=0).tolist()
-        area_ci_lower = np.percentile(area_draws, 2.5, axis=0).tolist()
-        area_ci_upper = np.percentile(area_draws, 97.5, axis=0).tolist()
+        area_mean = np.mean(area_draws, axis=0)
+        area_sd = np.std(area_draws, axis=0)
+        area_ci_lower = np.percentile(area_draws, 2.5, axis=0)
+        area_ci_upper = np.percentile(area_draws, 97.5, axis=0)
 
     linpred_samples = np.asarray(samples["linear_pred"])
-    linpred_mean = np.mean(linpred_samples, axis=0).tolist()
+    linpred_mean = np.mean(linpred_samples, axis=0)
 
     rand_eff_samples = np.asarray(samples["rand_eff"])
-    rand_eff_mean = np.mean(rand_eff_samples, axis=0).tolist()
+    rand_eff_mean = np.mean(rand_eff_samples, axis=0)
     # ponytail: means only; full draws for split effects skipped (recompute from hb draws when needed).
     if "rand_eff_area" in samples:
-        rand_eff_area_mean = np.mean(np.asarray(samples["rand_eff_area"]), axis=0).tolist()
+        rand_eff_area_mean = np.mean(np.asarray(samples["rand_eff_area"]), axis=0)
     else:
         rand_eff_area_mean = None
     if "rand_eff_subarea" in samples:
-        rand_eff_subarea_mean = np.mean(np.asarray(samples["rand_eff_subarea"]), axis=0).tolist()
+        rand_eff_subarea_mean = np.mean(np.asarray(samples["rand_eff_subarea"]), axis=0)
     else:
         rand_eff_subarea_mean = None
 
@@ -546,7 +553,7 @@ def fit_numpyro_hb(
 
     shrinkage_weights = None
     if "kappa_shrinkage" in samples:
-        shrinkage_weights = np.mean(np.asarray(samples["kappa_shrinkage"]), axis=0).tolist()
+        shrinkage_weights = np.mean(np.asarray(samples["kappa_shrinkage"]), axis=0)
 
     # Accurate Pointwise Log-Likelihood, WAIC, and DIC
     S_total = hb_samples.shape[0]

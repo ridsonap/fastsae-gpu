@@ -33,7 +33,7 @@
 #' @param warmup Number of MCMC warmup iterations (default 500).
 #' @param samples Number of MCMC post-warmup samples (default 1000).
 #' @param chains Number of parallel MCMC chains on GPU (default 2).
-#' @param device Target hardware: "auto", "metal" (Apple Silicon), "cuda" (NVIDIA), or "cpu".
+#' @param device Target hardware: "auto" (CUDA on Linux/Windows, CPU on macOS for stability; use "metal" explicitly for Apple Silicon GPU), "metal" (Apple Silicon), "cuda" (NVIDIA), or "cpu". Note: \code{device="metal"} on macOS may fall back to CPU if JAX Metal shaders fail (see Details).
 #' @param seed Random seed for MCMC reproducibility (default 42).
 #' @param print_result Logical: print summary of results upon completion (default TRUE).
 #' @param ... Additional arguments.
@@ -106,19 +106,17 @@ hb_area <- function(
   # Automatically configure JAX backend platform before python initializes
   old_plat <- Sys.getenv("JAX_PLATFORMS", unset = NA)
   on.exit({
-    if (is.na(old_plat)) {
+    if (is.na(old_plat) || !nzchar(old_plat)) {
       Sys.unsetenv("JAX_PLATFORMS")
     } else {
       Sys.setenv(JAX_PLATFORMS = old_plat)
     }
   }, add = TRUE)
 
-  if (device == "cpu" || (device == "auto" && Sys.info()["sysname"] == "Darwin")) {
-    if (Sys.getenv("JAX_PLATFORMS") == "") {
+  if (!nzchar(Sys.getenv("JAX_PLATFORMS"))) {
+    if (device == "cpu" || (device == "auto" && Sys.info()["sysname"] == "Darwin")) {
       Sys.setenv(JAX_PLATFORMS = "cpu")
-    }
-  } else if (device == "cuda") {
-    if (Sys.getenv("JAX_PLATFORMS") == "") {
+    } else if (device == "cuda") {
       Sys.setenv(JAX_PLATFORMS = "cuda,cpu")
     }
   }
@@ -186,6 +184,12 @@ hb_area <- function(
   mf <- stats::model.frame(formula, data, na.action = stats::na.pass)
   y_raw <- as.numeric(stats::model.response(mf))
   X_mat <- stats::model.matrix(formula, data = mf)
+  if (anyNA(X_mat)) {
+    cli::cli_abort("Covariate matrix {.code X} contains missing values (NA). Please impute or remove rows with NA covariates before fitting.")
+  }
+  if (any(!is.finite(X_mat))) {
+    cli::cli_abort("Covariate matrix {.code X} contains non-finite values (Inf/-Inf).")
+  }
   coef_names <- colnames(X_mat)
 
   # Validate optional variance / trial / exposure arguments
@@ -311,6 +315,8 @@ hb_area <- function(
     st_interaction = st_interaction,
     W_adj = if (!is.null(W_obj)) W_obj$adj_mat else NULL,
     scale_factor = if (!is.null(W_obj)) as.numeric(W_obj$scale_factor) else 1.0,
+    eig_values = if (!is.null(W_obj)) W_obj$eig_values else NULL,
+    eig_vectors = if (!is.null(W_obj)) W_obj$eig_vectors else NULL,
     num_warmup = as.integer(warmup),
     num_samples = as.integer(samples),
     num_chains = as.integer(chains),
