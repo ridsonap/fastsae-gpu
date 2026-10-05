@@ -89,26 +89,28 @@ census, registry, or published national release are provided).
 }
 \examples{
 \donttest{
-# Fit a Beta SAE model
-set.seed(123)
-D <- 20
-df <- data.frame(
-  domain = paste0("d", 1:D),
-  y = stats::rbeta(D, 2, 8),
-  vardir = rep(0.005, D),
-  x1 = stats::rnorm(D),
-  N = sample(1000:5000, D)
-)
-fit <- hb_area(y ~ x1, data = df, domain = "domain", vardir = "vardir",
-               family = "beta", warmup = 50, samples = 50, chains = 1)
+if (check_numpyro_available()) {
+  # Fit a Beta SAE model
+  set.seed(123)
+  D <- 20
+  df <- data.frame(
+    domain = paste0("d", 1:D),
+    y = stats::rbeta(D, 2, 8),
+    vardir = rep(0.005, D),
+    x1 = stats::rnorm(D),
+    N = sample(1000:5000, D)
+  )
+  fit <- hb_area(y ~ x1, data = df, domain = "domain", vardir = "vardir",
+                 family = "beta", warmup = 50, samples = 50, chains = 1)
 
-# 1. Self-Benchmarking (target derived automatically from sample survey)
-bm_self <- benchmark(fit, weight = "N")
-print(bm_self)
+  # 1. Self-Benchmarking (target derived automatically from sample survey)
+  bm_self <- benchmark(fit, weight = "N")
+  print(bm_self)
 
-# 2. External Benchmarking (calibrated to official published total 0.22)
-bm_ext <- benchmark(fit, target = 0.22, weight = "N", method = "logit")
-print(bm_ext)
+  # 2. External Benchmarking (calibrated to official published total 0.22)
+  bm_ext <- benchmark(fit, target = 0.22, weight = "N", method = "logit")
+  print(bm_ext)
+}
 }
 }
 \references{

@@ -76,6 +76,29 @@ jobs:
           check-dir: '"check"'
           upload-snapshots: true
 
+      # Surface the underlying R error as annotations so failures can be
+      # diagnosed through the REST API (job logs require admin access).
+      - name: Report check errors as annotations
+        if: failure()
+        shell: bash
+        run: |
+          shopt -s globstar nullglob
+          files=(check/**/*-Ex.Rout check/**/tests/*.Rout.fail check/**/00check.log)
+          found=0
+          for f in "${files[@]}"; do
+            [ -f "$f" ] || continue
+            found=1
+            echo "===== $f ====="
+            tail -n 40 "$f"
+            grep -E "Error( in|:)|Execution halted" "$f" | head -n 6 | while IFS= read -r line; do
+              msg=$(printf '%s' "$line" | tr -d '\r\n' | cut -c1-390)
+              printf '::error title=fastsaegpu check failure::%s\n' "$msg"
+            done
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error title=fastsaegpu check failure::Check produced no readable log files; see the job log."
+          fi
+
   test-coverage:
     runs-on: ubuntu-latest
     name: test-coverage
