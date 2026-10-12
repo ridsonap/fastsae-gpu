@@ -61,7 +61,7 @@ When specified alongside \code{domain}, the model fits nested random effects:
 
 \item{W}{Spatial adjacency matrix (required if spatial != "none").}
 
-\item{vardir}{Known direct sampling variances (for Gaussian and Beta).}
+\item{vardir}{Known direct sampling variances (for Gaussian and Beta); must be finite and strictly positive for sampled domains (see \code{smooth_vardir} for zero or missing values).}
 
 \item{trials}{Total trials / sample size per area (for Binomial).}
 
@@ -71,10 +71,11 @@ When specified alongside \code{domain}, the model fits nested random effects:
 
 \item{benchmark_weights}{Survey or population weights vector, or column name in \code{data}.}
 
-\item{benchmark_target}{Target benchmark value. If NULL (default), performs self-benchmarking
-using the survey-weighted direct total.}
+\item{benchmark_target}{Target benchmark value (single number on the scale of \code{hb}). If NULL (default),
+performs self-benchmarking to the \code{benchmark_weights}-weighted mean of the direct
+estimates over sampled domains.}
 
-\item{benchmark_method}{Calibration method: "logit", "optimal", "ratio", or "difference".}
+\item{benchmark_method}{Calibration method: "logit", "optimal", "ratio", or "difference". If not supplied, "logit" is used for \code{family = "beta"} / \code{"binomial"} and "optimal" otherwise; "logit" is only allowed for those two families.}
 
 \item{prior_beta}{Regression prior distribution: \code{"normal"} (default) or \code{"horseshoe"}
 for sparse high-dimensional shrinkage (Carvalho et al. 2010; Piironen & Vehtari 2017).}
@@ -94,16 +95,32 @@ Generalized Variance Functions (GVF) before estimation (default FALSE).}
 
 \item{chains}{Number of parallel MCMC chains on GPU (default 2).}
 
-\item{device}{Target hardware: "auto" (CUDA on Linux/Windows, CPU on macOS for stability; use "metal" explicitly for Apple Silicon GPU), "metal" (Apple Silicon), "cuda" (NVIDIA), or "cpu". Note: \code{device="metal"} on macOS may fall back to CPU if JAX Metal shaders fail (see Details).}
+\item{device}{Target hardware: "auto" (CUDA on Linux/Windows, CPU on macOS for stability; use "metal" explicitly for Apple Silicon GPU), "metal" (Apple Silicon), "cuda" (NVIDIA), or "cpu". Note: with jax-metal 0.1.1 (its latest release) NUTS cannot be compiled for Metal (unsupported \code{popcnt} operation), so \code{device="metal"} samples on CPU with a warning.}
 
 \item{seed}{Random seed for MCMC reproducibility (default 42).}
 
 \item{print_result}{Logical: print summary of results upon completion (default TRUE).}
 
-\item{...}{Additional arguments.}
+\item{...}{Currently unused.}
 }
 \value{
-An object of class \code{c("fastsae_hb_area", "fastsae")}.
+An object of class \code{c("fastsae_hb_area", "fastsae")}, a list with
+\describe{
+  \item{df_hb}{Data frame with one row per observation: \code{domain}, \code{y} (direct
+    estimate on the scale of \code{hb}: \code{y / trials} for binomial counts, \code{y / exposure}
+    for Poisson / negative binomial with \code{exposure}), \code{hb} (posterior mean, benchmarked
+    if requested), \code{linear_pred} (posterior mean of the linear predictor on the link scale),
+    \code{sd}, \code{mse}, \code{rse}, \code{ci_lower}, \code{ci_upper} (95\% credible interval),
+    \code{random_effect}, plus \code{subarea}, \code{time}, \code{vardir}, \code{trials} /
+    \code{estimated_total}, \code{exposure} / \code{estimated_count} and unbenchmarked columns
+    when applicable. \code{hb} and \code{df_eblup} are aliases.}
+  \item{estcoef}{Posterior summary of the regression coefficients (with \code{shrinkage_factor}
+    for the horseshoe prior).}
+  \item{hyperpar}{Posterior means of the variance components and other hyperparameters.}
+  \item{goodness}{DIC, pD, WAIC and pWAIC.}
+  \item{device, elapsed_seconds}{Device actually used by JAX and sampling time.}
+  \item{benchmark_info, gvf, call, data}{Benchmark settings, GVF fit, matched call and input data.}
+}
 }
 \description{
 Hierarchical Bayes for Area-Level Small Area Estimation with GPU NumPyro Backend

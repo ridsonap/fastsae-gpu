@@ -6,9 +6,9 @@
 #' GVF smoothing stabilizes sampling variance estimates, prevents artificial over-shrinkage,
 #' and improves model stability and MSE accuracy.
 #'
-#' @param y Numeric vector or formula term of direct area estimates.
-#' @param vardir Numeric vector or formula term of direct sampling variances.
-#' @param n Optional numeric vector of area sample sizes.
+#' @param y Numeric vector of direct area estimates, or a column name in \code{data}.
+#' @param vardir Numeric vector of direct sampling variances, or a column name in \code{data}.
+#' @param n Optional numeric vector of area sample sizes, or a column name in \code{data}.
 #' @param method Smoothing method: \code{"log_linear"} (default, Wolter 2007),
 #'   \code{"power"} (Cho et al., 2002), \code{"ratio"} (CV-squared model),
 #'   or \code{"loess"} (non-parametric local regression).
@@ -16,7 +16,9 @@
 #' @param ... Additional arguments passed to modeling functions.
 #' @return An object of class \code{c("fastsaegpu_gvf", "fastsae_gvf")} containing:
 #'   \itemize{
-#'     \item \code{vardir_smooth}: Numeric vector of smoothed sampling variances.
+#'     \item \code{vardir_smooth}: Numeric vector of smoothed sampling variances. Areas with an
+#'       observed \code{y} but zero or missing \code{vardir} receive the model-predicted variance;
+#'       areas with missing \code{y} stay \code{NA}.
 #'     \item \code{vardir_raw}: Original direct sampling variances.
 #'     \item \code{r_squared}: R-squared metric of the smoothing model.
 #'     \item \code{method}: The GVF model method used.
@@ -166,12 +168,35 @@ gvf_smooth <- function(
     model_obj <- fit_loess
   }
 
+  if (inherits(model_obj, "lm") && stats::df.residual(model_obj) < 1) {
+    cli::cli_abort("Not enough valid observations ({length(valid_idx)}) to fit the {.val {method}} GVF model with {length(stats::coef(model_obj))} parameters.")
+  }
+
   # Ensure positivity
   smooth_val <- pmax(smooth_val, 1e-8)
 
   # Reconstruct full vector
   vardir_smooth <- rep(NA_real_, length(y_vec))
   vardir_smooth[valid_idx] <- smooth_val
+
+  # Impute areas with observed y but zero/missing variance (e.g. all-0/all-1 samples)
+  extra_idx <- setdiff(which(!is.na(y_vec)), valid_idx)
+  if (length(extra_idx) > 0) {
+    y_e <- y_vec[extra_idx]
+    y_ec <- pmax(y_e, 1e-4)
+    n_e <- if (!is.null(n_vec)) n_vec[extra_idx] else NA_real_
+    new_df <- data.frame(
+      log_y = log(y_ec), log_1my = log(1 - pmin(y_ec, 1 - 1e-4)),
+      log_n = log(n_e), inv_n = 1 / n_e, inv_y = 1 / y_ec, y_val = y_e
+    )
+    pred_e <- stats::predict(model_obj, newdata = new_df)
+    extra_val <- switch(method,
+      ratio = pmax(pred_e, 1e-6) * y_e^2,
+      loess = exp(ifelse(is.na(pred_e), mean(log(v_val)), pred_e) + s2_res / 2),
+      exp(pred_e + s2_res / 2)
+    )
+    vardir_smooth[extra_idx] <- pmax(extra_val, 1e-8)
+  }
 
   res_df <- data.frame(
     y = y_vec,

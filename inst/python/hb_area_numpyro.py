@@ -9,12 +9,21 @@ import os
 import sys
 import numpy as np
 from scipy.special import logsumexp
+from scipy.sparse import csr_matrix
+
+def _backend_devices(jax, name):
+    """Devices of a JAX backend; jax-metal registers its platform as 'METAL'."""
+    for n in (name, name.upper()):
+        try:
+            devs = jax.devices(n)
+            if len(devs) > 0:
+                return devs
+        except Exception:
+            pass
+    return []
 
 def init_jax_environment(device="auto"):
     """Initializes JAX on the requested accelerator with graceful CPU fallback."""
-    import os
-    import sys
-    
     preferred = device
     if preferred == "auto":
         # On Linux/Windows, try CUDA. On macOS, default to optimized CPU unless metal requested
@@ -22,40 +31,40 @@ def init_jax_environment(device="auto"):
             preferred = "cuda"
         else:
             preferred = "cpu"
-            
-    if preferred == "cpu":
-        os.environ["JAX_PLATFORMS"] = "cpu"
-    elif preferred == "metal":
-        os.environ["JAX_PLATFORMS"] = "metal,cpu"
-    elif preferred in ("cuda", "gpu"):
-        os.environ["JAX_PLATFORMS"] = "cuda,cpu"
-        
+
+    # JAX_PLATFORMS is only read when JAX initializes its backends
+    if "jax" not in sys.modules:
+        if preferred == "cpu":
+            os.environ["JAX_PLATFORMS"] = "cpu"
+        elif preferred == "metal":
+            os.environ["JAX_PLATFORMS"] = "METAL,cpu"
+        elif preferred in ("cuda", "gpu"):
+            os.environ["JAX_PLATFORMS"] = "cuda,cpu"
+
     import jax
-    active_dev_str = "cpu"
-    
-    try:
-        if preferred in ("metal", "cuda", "gpu"):
-            backend_target = "metal" if preferred == "metal" else "cuda"
-            try:
-                devs = jax.devices(backend_target)
-                if len(devs) > 0:
-                    jax.config.update("jax_platform_name", backend_target)
-                    active_dev_str = f"{backend_target}:{str(devs[0])}"
-                else:
-                    active_dev_str = "cpu"
-            except Exception:
-                active_dev_str = "cpu"
-        else:
-            active_dev_str = "cpu"
-    except Exception:
-        active_dev_str = "cpu"
-        
+    target = "metal" if preferred == "metal" else ("cuda" if preferred in ("cuda", "gpu") else "cpu")
+    devs = _backend_devices(jax, target) if target != "cpu" else []
+    if devs:
+        active_dev_str = f"{target}:{devs[0]}"
+    else:
+        devs = _backend_devices(jax, "cpu") or jax.devices()
+        active_dev_str = "cpu" if devs[0].platform.lower() == "cpu" else f"{devs[0].platform}:{devs[0]}"
+    # Pin computation to the selected device; JAX's default backend may differ
+    # (e.g. METAL becomes the default whenever jax-metal is installed)
+    jax.config.update("jax_default_device", devs[0])
+
     import jax.numpy as jnp
     import numpyro
     import numpyro.distributions as dist
     from numpyro.infer import MCMC, NUTS, init_to_median
     
     return jax, jnp, numpyro, dist, MCMC, NUTS, init_to_median, active_dev_str
+
+def horseshoe_shrinkage(tau, lam, c2, xp=np):
+    """Regularized horseshoe (Piironen & Vehtari 2017): local scale lambda_tilde and
+    shrinkage factor kappa = 1 / (1 + tau^2 lambda_tilde^2), from the scale actually used by the prior."""
+    lam_tilde = xp.sqrt(c2) * lam / xp.sqrt(c2 + tau ** 2 * lam ** 2)
+    return lam_tilde, 1.0 / (1.0 + (tau * lam_tilde) ** 2)
 
 def build_temporal_operator(T, temporal, rho, jnp):
     """
@@ -138,6 +147,25 @@ def fit_numpyro_hb(
     exposure_np = np.asarray(exposure, dtype=np.float32) if exposure is not None else None
 
     vardir_obs = jnp.asarray(vardir_np[obs_idx], dtype=jnp.float32) if vardir_np is not None else None
+
+    # Gaussian: sample on a standardized scale, y_std = (y - y_c) / y_s, so the
+    # unit-scale priors and NUTS adaptation work for any data scale (e.g. incomes ~1e6).
+    # Draws are mapped back to the original scale right after sampling.
+    X_np = np.asarray(X, dtype=np.float64)
+    int_cols = np.where(np.all(X_np == 1.0, axis=0))[0]
+    int_mask = np.zeros(P)
+    if len(int_cols) > 0:
+        int_mask[int_cols[0]] = 1.0
+    y_c, y_s = 0.0, 1.0
+    if family == "gaussian" and len(obs_idx) > 1:
+        if len(int_cols) > 0:
+            y_c = float(np.mean(y_np[obs_idx]))
+        y_s = float(np.std(y_np[obs_idx]))
+        if not np.isfinite(y_s) or y_s <= 0:
+            y_s = 1.0
+        y_obs = (y_obs - y_c) / y_s
+        if vardir_obs is not None:
+            vardir_obs = vardir_obs / (y_s ** 2)
     trials_obs = jnp.asarray(trials_np[obs_idx], dtype=jnp.float32) if trials_np is not None else None
     exposure_obs = jnp.asarray(exposure_np[obs_idx], dtype=jnp.float32) if exposure_np is not None else None
 
@@ -164,28 +192,30 @@ def fit_numpyro_hb(
         evals_all = jnp.asarray(evals, dtype=jnp.float32)
         evecs_all = jnp.asarray(evecs, dtype=jnp.float32)
 
+    pen_idx = np.where(int_mask == 0.0)[0]
+
     def model():
         # Regression coefficients
         beta_scale = 2.5 if family in ("beta", "binomial") else 10.0
-        if prior_beta == "horseshoe" and P > 1:
+        if prior_beta == "horseshoe" and len(pen_idx) > 0:
             # Regularized Horseshoe (Finnish Horseshoe) prior (Carvalho et al. 2010; Piironen & Vehtari 2017)
-            # Unpenalized weakly informative normal intercept
-            beta_0 = numpyro.sample("beta_0", dist.Normal(0.0, beta_scale))
-            
-            # Penalized slope coefficients
-            P_slopes = P - 1
-            z_beta = numpyro.sample("z_beta", dist.Normal(0.0, 1.0).expand([P_slopes]))
-            lambda_beta = numpyro.sample("lambda_beta", dist.HalfCauchy(1.0).expand([P_slopes]))
+            # Penalized coefficients: every column except the intercept (if any)
+            P_pen = len(pen_idx)
+            z_beta = numpyro.sample("z_beta", dist.Normal(0.0, 1.0).expand([P_pen]))
+            lambda_beta = numpyro.sample("lambda_beta", dist.HalfCauchy(1.0).expand([P_pen]))
             tau_hs = numpyro.sample("tau_hs", dist.HalfCauchy(1.0))
             c2_hs = numpyro.sample("c2_hs", dist.InverseGamma(2.0, 8.0))
-            
-            lambda_tilde = (jnp.sqrt(c2_hs) * lambda_beta) / jnp.sqrt(c2_hs + (tau_hs ** 2) * (lambda_beta ** 2))
-            beta_slopes = z_beta * tau_hs * lambda_tilde
-            beta = jnp.concatenate([beta_0[None], beta_slopes])
+
+            lambda_tilde, kappa = horseshoe_shrinkage(tau_hs, lambda_beta, c2_hs, xp=jnp)
+            beta = jnp.zeros(P).at[pen_idx].set(z_beta * tau_hs * lambda_tilde)
+            if len(int_cols) > 0:
+                # Unpenalized weakly informative normal intercept
+                beta_0 = numpyro.sample("beta_0", dist.Normal(0.0, beta_scale))
+                beta = beta.at[int_cols[0]].set(beta_0)
             numpyro.deterministic("beta", beta)
             numpyro.deterministic("tau_horseshoe", tau_hs)
-            kappa = 1.0 / (1.0 + (tau_hs * lambda_beta) ** 2)
-            numpyro.deterministic("kappa_shrinkage", kappa)
+            # Full length P; 0 for the unpenalized intercept
+            numpyro.deterministic("kappa_shrinkage", jnp.zeros(P).at[pen_idx].set(kappa))
         else:
             beta = numpyro.sample("beta", dist.Normal(0.0, beta_scale).expand([P]))
         linpred_fixed = jnp.dot(X_jnp, beta)
@@ -283,7 +313,8 @@ def fit_numpyro_hb(
                     u_st = u_st_mat[domain_jnp, time_jnp]
 
         # Total latent linear predictor
-        rand_total = u_spatial[domain_jnp]
+        u_area_rows = u_spatial[domain_jnp]
+        rand_total = u_area_rows
 
         # Nested Sub-Area Random Effect (Torabi & Rao, 2014)
         if subarea_jnp is not None and num_subareas > 1:
@@ -300,16 +331,13 @@ def fit_numpyro_hb(
 
         eta_raw = linpred_fixed + rand_total
         eta = jnp.clip(eta_raw, -8.0, 8.0) if family in ("beta", "binomial") else eta_raw
-        numpyro.deterministic("linear_pred", eta)
+        # Only S x N sites that are not derivable from others are recorded (each is kept on
+        # the device for every draw): linear_pred = link(hb_est) is computed after sampling.
         numpyro.deterministic("rand_eff", rand_total)
-        # ponytail: split components for fastsae::hb_twofold df_hb (random_effect_area/subarea)
-        _u_area_comp = u_spatial[domain_jnp]
+        # Split components for hb_twofold df_hb (random_effect_area/subarea); nested models only
         if subarea_jnp is not None and num_subareas > 1:
-            _u_sub_comp = u_subarea[subarea_jnp]
-        else:
-            _u_sub_comp = jnp.zeros(N)
-        numpyro.deterministic("rand_eff_area", _u_area_comp)
-        numpyro.deterministic("rand_eff_subarea", _u_sub_comp)
+            numpyro.deterministic("rand_eff_area", u_area_rows)
+            numpyro.deterministic("rand_eff_subarea", u_subarea[subarea_jnp])
 
         # Likelihood and observation sampling
         if family == "gaussian":
@@ -408,19 +436,27 @@ def fit_numpyro_hb(
             raise e
             
     samples = mcmc.get_samples()
+    if y_c != 0.0 or y_s != 1.0:
+        samples = {k: np.asarray(v) for k, v in samples.items()}
+        samples["hb_est"] = y_c + y_s * samples["hb_est"]
+        for k in ("rand_eff", "rand_eff_area", "rand_eff_subarea", "sigma_e"):
+            if k in samples:
+                samples[k] = y_s * samples[k]
+        samples["beta"] = y_s * samples["beta"] + y_c * int_mask
+        for k in list(samples):
+            if k.startswith("sigma2_"):
+                samples[k] = (y_s ** 2) * samples[k]
 
     # Extract posterior statistics — keep as numpy arrays for zero-copy reticulate transfer
     beta_samples = np.asarray(samples["beta"])
     beta_mean = np.mean(beta_samples, axis=0)
     beta_sd = np.std(beta_samples, axis=0)
-    beta_ci_lower = np.percentile(beta_samples, 2.5, axis=0)
-    beta_ci_upper = np.percentile(beta_samples, 97.5, axis=0)
+    beta_ci_lower, beta_ci_upper = np.percentile(beta_samples, [2.5, 97.5], axis=0)
 
     hb_samples = np.asarray(samples["hb_est"])
     hb_mean = np.mean(hb_samples, axis=0)
     hb_sd = np.std(hb_samples, axis=0)
-    hb_ci_lower = np.percentile(hb_samples, 2.5, axis=0)
-    hb_ci_upper = np.percentile(hb_samples, 97.5, axis=0)
+    hb_ci_lower, hb_ci_upper = np.percentile(hb_samples, [2.5, 97.5], axis=0)
 
     # In-Model Benchmark / Calibration across MCMC sample draws
     benchmarked = False
@@ -457,7 +493,10 @@ def fit_numpyro_hb(
                     break
             hb_bench_samples = 1.0 / (1.0 + np.exp(-(logit_s + delta[:, None])))
         elif used_method == "optimal":
-            psi = vardir_np if vardir_np is not None else np.var(hb_samples, axis=0)
+            # Posterior variance where the sampling variance is unknown (unsampled domains)
+            psi = np.var(hb_samples, axis=0)
+            if vardir_np is not None:
+                psi = np.where(np.isfinite(vardir_np), vardir_np, psi)
             denom = np.sum((w_norm ** 2) * psi)
             if denom > 1e-9:
                 agg_s = np.sum(hb_samples * w_norm[None, :], axis=1, keepdims=True)
@@ -475,8 +514,7 @@ def fit_numpyro_hb(
 
         hb_bench_mean = np.mean(hb_bench_samples, axis=0)
         hb_bench_sd = np.std(hb_bench_samples, axis=0)
-        hb_bench_ci_lower = np.percentile(hb_bench_samples, 2.5, axis=0)
-        hb_bench_ci_upper = np.percentile(hb_bench_samples, 97.5, axis=0)
+        hb_bench_ci_lower, hb_bench_ci_upper = np.percentile(hb_bench_samples, [2.5, 97.5], axis=0)
 
     # Twofold subarea -> area aggregation (Torabi & Rao 2014; Rao & Molina 2015 Ch.8)
     # Area mean: theta_j. = sum_k W_jk * theta_jk, weights normalized per area.
@@ -489,22 +527,25 @@ def fit_numpyro_hb(
         w_tf = np.asarray(twofold_weights, dtype=np.float64)
         w_tf = np.where(np.isnan(w_tf), 0.0, w_tf)
         domain_np = np.asarray(domain_idx, dtype=np.int64)
-        area_draws = np.zeros((hb_samples.shape[0], int(D)), dtype=np.float64)
-        for _j in range(int(D)):
-            _idx = np.where(domain_np == _j)[0]
-            if len(_idx) == 0:
-                continue
-            _w = w_tf[_idx]
-            _s = float(np.sum(_w))
-            _wn = (_w / _s) if _s > 0 else (np.ones(len(_idx)) / len(_idx))
-            area_draws[:, _j] = np.sum(hb_samples[:, _idx] * _wn[None, :], axis=1)
+        # Normalized weights per area (equal weights if an area's weights sum to 0), applied to
+        # all draws at once through a sparse N x D aggregation matrix
+        w_sum = np.bincount(domain_np, weights=w_tf, minlength=int(D))[domain_np]
+        n_area = np.bincount(domain_np, minlength=int(D))[domain_np]
+        w_norm_tf = np.where(w_sum > 0, w_tf / np.where(w_sum > 0, w_sum, 1.0), 1.0 / n_area)
+        agg = csr_matrix((w_norm_tf, (np.arange(len(domain_np)), domain_np)), shape=(len(domain_np), int(D)))
+        area_draws = np.asarray(agg.T.dot(hb_samples.T).T, dtype=np.float64)
         area_mean = np.mean(area_draws, axis=0)
         area_sd = np.std(area_draws, axis=0)
-        area_ci_lower = np.percentile(area_draws, 2.5, axis=0)
-        area_ci_upper = np.percentile(area_draws, 97.5, axis=0)
+        area_ci_lower, area_ci_upper = np.percentile(area_draws, [2.5, 97.5], axis=0)
 
-    linpred_samples = np.asarray(samples["linear_pred"])
-    linpred_mean = np.mean(linpred_samples, axis=0)
+    # Linear predictor on the link scale, recovered from hb_est = inverse_link(eta)
+    if family == "gaussian":
+        linpred_mean = hb_mean
+    elif family in ("beta", "binomial"):
+        p64 = np.clip(hb_samples.astype(np.float64), 1e-12, 1.0 - 1e-12)
+        linpred_mean = np.mean(np.log(p64) - np.log1p(-p64), axis=0)
+    else:
+        linpred_mean = np.mean(np.log(np.maximum(hb_samples.astype(np.float64), 1e-300)), axis=0)
 
     rand_eff_samples = np.asarray(samples["rand_eff"])
     rand_eff_mean = np.mean(rand_eff_samples, axis=0)

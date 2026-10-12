@@ -26,7 +26,7 @@
 #' @param warmup Number of MCMC warmup iterations (default 500).
 #' @param samples Number of MCMC post-warmup samples (default 1000).
 #' @param chains Number of parallel MCMC chains (default 2).
-#' @param device Target hardware: "auto" (CPU on macOS for stability; use "metal" explicitly for Apple Silicon GPU), "metal", "cuda", or "cpu".
+#' @param device Target hardware: "auto" (CUDA on Linux/Windows, CPU on macOS), "metal", "cuda", or "cpu". As in \code{hb_area()}, \code{device="metal"} currently samples on CPU with a warning.
 #' @param seed Random seed (default 42).
 #' @param print_result Logical: print summary upon completion (default TRUE).
 #' @param ... Additional arguments (currently unused).
@@ -126,10 +126,14 @@ hb_twofold <- function(
     cli::cli_abort("{.arg area} and {.arg subarea} must match rows of {.arg data}.")
   }
   if (any(is.na(area_raw))) cli::cli_abort("{.arg area} must not contain NA.")
+  if (anyNA(sub_raw)) cli::cli_abort("{.arg subarea} must not contain NA.")
 
   mf <- stats::model.frame(formula, data, na.action = stats::na.pass)
   y_raw <- as.numeric(stats::model.response(mf))
   X_mat <- stats::model.matrix(formula, data = mf)
+  if (any(!is.finite(X_mat))) {
+    cli::cli_abort("Covariate matrix {.code X} contains missing or non-finite values. Please impute or remove them before fitting.")
+  }
   coef_names <- colnames(X_mat)
 
   psi <- as.numeric(.get_variable(data, vardir))
@@ -145,8 +149,10 @@ hb_twofold <- function(
   uniq_area <- unique(area_raw)
   D <- length(uniq_area)
   domain_idx <- as.integer(factor(area_raw, levels = uniq_area)) - 1L
-  uniq_sub <- unique(sub_raw)
-  sub_idx <- as.integer(factor(sub_raw, levels = uniq_sub)) - 1L
+  # Subarea identified within its area: codes restarting per area ("01", "02", ...) stay distinct
+  sub_key <- paste(area_raw, sub_raw, sep = "\r")
+  uniq_sub <- unique(sub_key)
+  sub_idx <- as.integer(factor(sub_key, levels = uniq_sub)) - 1L
 
   backend <- .get_numpyro_backend(device = device)
   cli::cli_alert_info("Running twofold HB (Torabi & Rao 2014) on GPU/accelerator ({samples} samples, {warmup} warmup, {chains} chains)...")
@@ -184,6 +190,7 @@ hb_twofold <- function(
   )
   elapsed <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
   cli::cli_alert_success("Sampling completed in {round(elapsed, 2)} seconds.")
+  .warn_device_fallback(device, fit_py$device_used)
 
   beta_mean <- as.numeric(fit_py$beta_mean)
   beta_sd <- as.numeric(fit_py$beta_sd)
@@ -233,28 +240,19 @@ hb_twofold <- function(
   df_hb$weight <- w_raw
   df_hb$sampled <- sampled
 
-  # Area-level aggregation from full posterior draws (Python); fallback to weighted mean.
+  # Area-level aggregation from the full posterior draws (computed in the Python backend).
   # Same columns as fastsae::hb_twofold df_area.
-  a_mean <- tryCatch(as.numeric(fit_py$area_mean), error = function(e) NULL)
-  a_sd <- tryCatch(as.numeric(fit_py$area_sd), error = function(e) NULL)
-  a_lo <- tryCatch(as.numeric(fit_py$area_ci_lower), error = function(e) NULL)
-  a_hi <- tryCatch(as.numeric(fit_py$area_ci_upper), error = function(e) NULL)
-  if (is.null(a_mean) || length(a_mean) != D) {
-    a_mean <- vapply(uniq_area, function(a) {
-      i <- which(area_raw == a)
-      stats::weighted.mean(hb[i], w_raw[i])
-    }, numeric(1))
-    a_sd <- vapply(uniq_area, function(a) {
-      i <- which(area_raw == a)
-      sqrt(sum((w_raw[i] / sum(w_raw[i]))^2 * sdv[i]^2))
-    }, numeric(1))
-    a_lo <- a_mean - 1.96 * a_sd
-    a_hi <- a_mean + 1.96 * a_sd
-  }
-  a_dir <- vapply(uniq_area, function(a) {
-    i <- which(area_raw == a & sampled)
-    if (!length(i)) NA_real_ else stats::weighted.mean(y_raw[i], w_raw[i])
-  }, numeric(1))
+  a_mean <- as.numeric(fit_py$area_mean)
+  a_sd <- as.numeric(fit_py$area_sd)
+  a_lo <- as.numeric(fit_py$area_ci_lower)
+  a_hi <- as.numeric(fit_py$area_ci_upper)
+  # Per-area sums in one pass (area index 1..D follows uniq_area)
+  grp <- domain_idx + 1L
+  w_area <- as.numeric(rowsum(w_raw, grp))
+  # Weighted direct mean over sampled subareas; NA for areas without sampled subareas
+  a_dir <- rep(NA_real_, D)
+  g_s <- grp[sampled]
+  a_dir[sort(unique(g_s))] <- rowsum(w_raw[sampled] * y_raw[sampled], g_s)[, 1] / rowsum(w_raw[sampled], g_s)[, 1]
   # Same columns as fastsae::hb_twofold df_area (y = NA: no direct area mean).
   Est_area <- data.frame(
     domain = uniq_area,
@@ -264,7 +262,7 @@ hb_twofold <- function(
     rse_area = ifelse(abs(a_mean) < 1e-8, NA_real_, as.numeric(a_sd) / abs(as.numeric(a_mean)) * 100),
     ci_lower_area = as.numeric(a_lo),
     ci_upper_area = as.numeric(a_hi),
-    n_subareas = as.integer(table(factor(area_raw, levels = uniq_area))),
+    n_subareas = tabulate(grp, nbins = D),
     stringsAsFactors = FALSE
   )
   Est_area$y <- Est_area$direct <- as.numeric(a_dir)
@@ -275,7 +273,7 @@ hb_twofold <- function(
   Est_area$ci_lower <- Est_area$ci_lower_area
   Est_area$ci_upper <- Est_area$ci_upper_area
   Est_area$eblup <- Est_area$hb
-  Est_area$weight <- vapply(uniq_area, function(a) sum(w_raw[area_raw == a]), numeric(1))
+  Est_area$weight <- w_area
   Est_area$area <- uniq_area
 
   hyper_names <- names(fit_py$hyperparameters)

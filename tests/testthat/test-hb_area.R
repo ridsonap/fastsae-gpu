@@ -560,3 +560,255 @@ test_that("hb_area supports two-level nested sub-area SAE models (Torabi & Rao, 
 
 
 
+
+# ---- Regression tests (bug fixes) ------------------------------------------
+
+test_that("hb_area rejects invalid identifiers, auxiliaries and model combinations before sampling", {
+  df <- data.frame(y = c(1.2, 2.1, 0.8, 1.5), x = c(0.1, 0.5, -0.3, 0.2),
+                   vardir = rep(0.1, 4), dom = paste0("d", 1:4), t = c(1, 1, 2, 2))
+  # NA identifiers would become out-of-range indices that JAX silently clamps
+  d_na <- df
+  d_na$dom[2] <- NA
+  expect_error(hb_area(y ~ x, data = d_na, domain = "dom", vardir = "vardir"), "domain.*missing values")
+  d_na <- df
+  d_na$t[3] <- NA
+  expect_error(hb_area(y ~ x, data = d_na, domain = "dom", time = "t", vardir = "vardir"), "time.*missing values")
+
+  # vardir = 0 / NA for a sampled domain
+  d_v <- df
+  d_v$vardir[1] <- 0
+  expect_error(hb_area(y ~ x, data = d_v, vardir = "vardir"), "vardir.*strictly positive")
+  d_v$vardir[1] <- NA
+  expect_error(hb_area(y ~ x, data = d_v, vardir = "vardir"), "smooth_vardir")
+
+  # binomial: invalid trials and counts above trials
+  d_b <- data.frame(y = c(3, 5, 12, 4), x = df$x, n = c(10, 10, 10, 0))
+  expect_error(hb_area(y ~ x, data = d_b, trials = "n", family = "binomial"), "trials.*strictly positive")
+  d_b$n[4] <- 10
+  expect_error(hb_area(y ~ x, data = d_b, trials = "n", family = "binomial"), "\\[0, trials\\]")
+
+  # poisson: non-positive exposure
+  d_p <- data.frame(y = c(3, 5, 12, 4), x = df$x, e = c(10, 0, 10, 10))
+  expect_error(hb_area(y ~ x, data = d_p, exposure = "e", family = "poisson"), "exposure.*strictly positive")
+
+  # benchmark arguments
+  d_w <- transform(df, w = c(1, 2, NA, 1))
+  expect_error(hb_area(y ~ x, data = d_w, vardir = "vardir", benchmark = TRUE, benchmark_weights = "w"),
+               "benchmark_weights.*strictly positive")
+  d_w$w[3] <- 1
+  expect_error(hb_area(y ~ x, data = d_w, vardir = "vardir", benchmark = TRUE, benchmark_weights = "w",
+                       benchmark_method = "logit"), "requires estimates in")
+  expect_error(hb_area(y ~ x, data = d_w, vardir = "vardir", benchmark = TRUE, benchmark_weights = "w",
+                       benchmark_target = c(1, 2)), "single finite number")
+
+  # spatio-temporal interactions that would be silently dropped
+  expect_error(hb_area(y ~ x, data = df, domain = "dom", time = "t", vardir = "vardir",
+                       st_interaction = "type1"), "requires a temporal effect")
+  expect_error(hb_area(y ~ x, data = df, domain = "dom", time = "t", vardir = "vardir",
+                       temporal = "ar1", st_interaction = "separable"), "requires a structured spatial effect")
+})
+
+test_that("W with row names not matching the domains warns about assumed ordering", {
+  W <- matrix(c(0, 1, 0, 1, 0, 1, 0, 1, 0), 3, 3, dimnames = list(c("a", "b", "c"), c("a", "b", "c")))
+  expect_warning(
+    fastsaegpu:::.convert_spatial_weights(W, n_domains = 3, domain_names = c("d1", "d2", "d3")),
+    "do not match the domain identifiers"
+  )
+  expect_no_warning(fastsaegpu:::.convert_spatial_weights(W, n_domains = 3, domain_names = c("c", "a", "b")))
+})
+
+test_that(".resolve_nesting keeps subarea codes that restart within each major area distinct", {
+  prov <- rep(paste0("P", 1:6), each = 4)
+  kab <- sprintf("%02d", rep(1:4, 6))
+  nest <- fastsaegpu:::.resolve_nesting(prov, kab)
+  expect_false(nest$swapped)
+  expect_identical(nest$major, prov)
+  expect_equal(length(unique(nest$sub_key)), 24)
+  # Genuinely inverted specification is still swapped
+  kab_global <- paste0("K", 1:24)
+  inv <- fastsaegpu:::.resolve_nesting(kab_global, prov)
+  expect_true(inv$swapped)
+  expect_identical(inv$major, prov)
+})
+
+test_that("Gaussian hb_area is not shrunk towards 0 for large-scale responses", {
+  skip_on_cran()
+  skip_if_not(check_numpyro_available(), "NumPyro/JAX not available")
+  set.seed(1)
+  D <- 30
+  x <- rnorm(D, 10, 2)
+  theta <- 1e6 + 5e4 * x + rnorm(D, 0, 3e4)
+  y <- theta + rnorm(D, 0, 1e4)
+  df <- data.frame(y = y, x = x, vardir = rep(1e8, D))
+  fit <- hb_area(y ~ x, data = df, vardir = "vardir", warmup = 200L, samples = 300L,
+                 chains = 1L, device = "cpu", print_result = FALSE)
+  expect_lt(mean(abs(fit$df_hb$hb - y) / y), 0.02)
+  ols <- coef(lm(y ~ x))
+  expect_equal(unname(coef(fit)), unname(ols), tolerance = 0.1)
+  expect_gt(fit$random_effect_var, 1e8)
+})
+
+test_that("binomial counts: df_hb$y is the direct proportion and self-benchmark targets the proportion scale", {
+  skip_on_cran()
+  skip_if_not(check_numpyro_available(), "NumPyro/JAX not available")
+  set.seed(2)
+  D <- 15
+  n <- sample(30:80, D, TRUE)
+  x <- rnorm(D)
+  yc <- rbinom(D, n, plogis(-0.5 + 0.5 * x))
+  w <- runif(D, 1, 5)
+  df <- data.frame(y = yc, x = x, n = n, w = w)
+  fit <- hb_area(y ~ x, data = df, trials = "n", family = "binomial", benchmark = TRUE,
+                 benchmark_weights = "w", warmup = 150L, samples = 200L, chains = 1L,
+                 device = "cpu", print_result = FALSE)
+  expect_equal(fit$df_hb$y, yc / n)
+  target <- sum(w * yc / n) / sum(w)
+  expect_equal(fit$benchmark_info$target, target, tolerance = 1e-6)
+  expect_equal(sum(w * fit$df_hb$hb) / sum(w), target, tolerance = 1e-4)
+  expect_true(all(fit$df_hb$hb > 0 & fit$df_hb$hb < 1))
+  expect_equal(fit$df_hb$estimated_total, fit$df_hb$hb * n)
+  # Post-hoc benchmark() works on the same (proportion) scale
+  bm <- benchmark(fit, weight = "w")
+  expect_equal(sum(w * bm$benchmarked) / sum(w), target, tolerance = 1e-6)
+})
+
+test_that("in-model self-benchmarking with unsampled domains returns finite estimates", {
+  skip_on_cran()
+  skip_if_not(check_numpyro_available(), "NumPyro/JAX not available")
+  set.seed(3)
+  D <- 12
+  x <- rnorm(D)
+  y <- 2 + x + rnorm(D, 0, 0.3)
+  y[3] <- NA
+  w <- runif(D, 1, 3)
+  df <- data.frame(y = y, x = x, vardir = rep(0.09, D), w = w)
+  obs <- !is.na(y)
+  target <- sum(w[obs] * y[obs]) / sum(w[obs])
+  for (m in c("ratio", "optimal")) {
+    fit <- hb_area(y ~ x, data = df, vardir = "vardir", benchmark = TRUE, benchmark_weights = "w",
+                   benchmark_method = m, warmup = 100L, samples = 150L, chains = 1L,
+                   device = "cpu", print_result = FALSE)
+    expect_true(all(is.finite(fit$df_hb$hb)))
+    expect_equal(sum(w * fit$df_hb$hb) / sum(w), target, tolerance = 1e-4)
+  }
+})
+
+test_that("Gaussian in-model benchmarking defaults to 'optimal' instead of logit", {
+  skip_on_cran()
+  skip_if_not(check_numpyro_available(), "NumPyro/JAX not available")
+  set.seed(4)
+  D <- 12
+  x <- rnorm(D)
+  y <- 2 + x + rnorm(D, 0, 0.3)
+  w <- runif(D, 1, 3)
+  df <- data.frame(y = y, x = x, vardir = rep(0.09, D), w = w)
+  fit <- hb_area(y ~ x, data = df, vardir = "vardir", benchmark = TRUE, benchmark_weights = "w",
+                 warmup = 100L, samples = 150L, chains = 1L, device = "cpu", print_result = FALSE)
+  expect_equal(fit$benchmark_info$method, "optimal")
+  expect_equal(sum(w * fit$df_hb$hb) / sum(w), sum(w * y) / sum(w), tolerance = 1e-4)
+  expect_gt(stats::cor(fit$df_hb$hb, y), 0.9)
+})
+
+test_that("nested hb_area: subarea codes restarting per major area give the same fit as unique codes", {
+  skip_on_cran()
+  skip_if_not(check_numpyro_available(), "NumPyro/JAX not available")
+  set.seed(5)
+  prov <- rep(paste0("P", 1:6), each = 4)
+  kab <- sprintf("%02d", rep(1:4, 6))
+  x <- rnorm(24)
+  y <- 1 + 0.5 * x + rnorm(6, 0, 0.4)[as.integer(factor(prov))] + rnorm(24, 0, 0.2)
+  df <- data.frame(y = y, x = x, vardir = rep(0.04, 24), prov = prov, kab = kab,
+                   kab_global = paste(prov, kab))
+  args <- list(y ~ x, data = df, domain = "prov", vardir = "vardir", warmup = 80L, samples = 100L,
+               chains = 1L, device = "cpu", print_result = FALSE)
+  fit_rel <- do.call(hb_area, c(args, subarea = "kab"))
+  fit_glob <- do.call(hb_area, c(args, subarea = "kab_global"))
+  expect_identical(fit_rel$df_hb$domain, prov)
+  expect_equal(fit_rel$df_hb$hb, fit_glob$df_hb$hb)
+})
+
+test_that("requesting an unavailable accelerator warns instead of silently using CPU", {
+  skip_on_cran()
+  skip_if(nzchar(Sys.which("nvidia-smi")), "CUDA GPU present")
+  skip_if_not(check_numpyro_available(), "NumPyro/JAX not available")
+  set.seed(6)
+  df <- data.frame(y = rnorm(8, 2), x = rnorm(8), vardir = rep(0.1, 8))
+  expect_warning(
+    hb_area(y ~ x, data = df, vardir = "vardir", warmup = 30L, samples = 30L, chains = 1L,
+            device = "cuda", print_result = FALSE),
+    "not available to JAX"
+  )
+})
+
+test_that("Python backend detects the jax-metal 'METAL' platform and pins the CPU device when asked", {
+  skip_on_cran()
+  skip_if_not(Sys.info()[["sysname"]] == "Darwin", "Metal only on macOS")
+  skip_if_not(check_numpyro_available(), "NumPyro/JAX not available")
+  py <- reticulate::py_exe()
+  path <- dirname(system.file("python", "hb_area_numpyro.py", package = "fastsaegpu"))
+  code <- paste(
+    "import sys", sprintf("sys.path.insert(0, %s)", shQuote(path, type = "sh")), "import jax",
+    "has = any(d.platform.upper() == 'METAL' for d in jax.devices())",
+    "print('HAS_METAL' if has else 'NO_METAL')",
+    "import hb_area_numpyro as m",
+    "print(m.init_jax_environment('metal')[-1])",
+    "import jax.numpy as jnp",
+    "print(m.init_jax_environment('cpu')[-1], list(jnp.zeros(1).devices())[0].platform)",
+    sep = "\n"
+  )
+  out <- suppressWarnings(system2(py, c("-c", shQuote(code)), stdout = TRUE, stderr = FALSE,
+                                  env = "JAX_PLATFORMS="))
+  skip_if(!any(out == "HAS_METAL"), "jax-metal not installed")
+  expect_true(any(grepl("^metal:", out)))
+  expect_true(any(out == "cpu cpu"))
+})
+
+test_that("horseshoe shrinkage factor uses the regularized local scale lambda_tilde", {
+  skip_on_cran()
+  skip_if_not(check_numpyro_available(), "NumPyro/JAX not available")
+  be <- fastsaegpu:::.get_numpyro_backend("cpu")
+  # Very large lambda: slab caps lambda_tilde at sqrt(c2) / tau, so kappa -> 1 / (1 + c2), not 0
+  big <- be$horseshoe_shrinkage(tau = 1, lam = 1e6, c2 = 4)
+  expect_equal(as.numeric(big[[1]]), 2, tolerance = 1e-6)
+  expect_equal(as.numeric(big[[2]]), 1 / (1 + 4), tolerance = 1e-6)
+  # Huge slab: reduces to the plain horseshoe 1 / (1 + tau^2 lambda^2)
+  plain <- be$horseshoe_shrinkage(tau = 0.1, lam = 0.5, c2 = 1e12)
+  expect_equal(as.numeric(plain[[2]]), 1 / (1 + 0.05^2), tolerance = 1e-6)
+})
+
+test_that("horseshoe penalizes every coefficient when the model has no intercept", {
+  skip_on_cran()
+  skip_if_not(check_numpyro_available(), "NumPyro/JAX not available")
+  set.seed(8)
+  D <- 15
+  df <- data.frame(x1 = rnorm(D), x2 = rnorm(D), vardir = rep(0.1, D))
+  df$y <- 1.5 * df$x1 + rnorm(D, 0, 0.4)
+  fit <- hb_area(y ~ x1 + x2 - 1, data = df, vardir = "vardir", prior_beta = "horseshoe",
+                 warmup = 100L, samples = 150L, chains = 1L, device = "cpu", print_result = FALSE)
+  expect_equal(rownames(fit$estcoef), c("x1", "x2"))
+  expect_true(all(fit$estcoef$shrinkage_factor > 0))
+  expect_output(print(fit), "x1")
+})
+
+test_that("Metal NUTS fallback warns with the actual cause", {
+  expect_warning(fastsaegpu:::.warn_device_fallback("metal", "cpu (fallback)"), "popcnt")
+  expect_warning(fastsaegpu:::.warn_device_fallback("cuda", "cpu"), "not available to JAX")
+  expect_no_warning(fastsaegpu:::.warn_device_fallback("auto", "cpu"))
+  expect_no_warning(fastsaegpu:::.warn_device_fallback("metal", "metal:METAL(id=0)"))
+})
+
+test_that("backend records split random-effect draws only for nested models", {
+  skip_on_cran()
+  skip_if_not(check_numpyro_available(), "NumPyro/JAX not available")
+  be <- fastsaegpu:::.get_numpyro_backend("cpu")
+  set.seed(9)
+  N <- 12L
+  X <- cbind(1, rnorm(N))
+  y <- as.numeric(X %*% c(2, 1) + rnorm(N, 0, 0.4))
+  res <- be$fit_numpyro_hb(y = y, X = X, domain_idx = 0:(N - 1L), vardir = rep(0.1, N), D = N,
+                           num_warmup = 50L, num_samples = 50L, num_chains = 1L, device = "cpu")
+  expect_null(res$rand_eff_area_mean)
+  expect_null(res$rand_eff_subarea_mean)
+  # Gaussian identity link: linear predictor equals the HB estimate
+  expect_equal(as.numeric(res$linpred_mean), as.numeric(res$hb_mean))
+})

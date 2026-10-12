@@ -83,12 +83,13 @@ print.fastsae_hb_area <- function(x, ...) {
     # Print standard 4 columns to avoid printCoefmat distortion
     cols_to_print <- intersect(c("beta", "std.error", "zvalue", "pvalue"), names(x$estcoef))
     stats::printCoefmat(as.matrix(x$estcoef[, cols_to_print, drop = FALSE]), signif.stars = TRUE, ...)
-    if ("shrinkage_factor" %in% names(x$estcoef) && nrow(x$estcoef) > 1) {
+    if ("shrinkage_factor" %in% names(x$estcoef)) {
       cli::cli_alert_info("Horseshoe shrinkage weights kappa_j (1 = noise pruned, 0 = signal retained):")
+      pen <- rownames(x$estcoef) != "(Intercept)"
       sw_df <- data.frame(
-        Variable = rownames(x$estcoef)[-1],
-        Shrinkage = x$estcoef$shrinkage_factor[-1],
-        Signal_Retained = paste0(round((1 - x$estcoef$shrinkage_factor[-1]) * 100, 1), "%")
+        Variable = rownames(x$estcoef)[pen],
+        Shrinkage = x$estcoef$shrinkage_factor[pen],
+        Signal_Retained = paste0(round((1 - x$estcoef$shrinkage_factor[pen]) * 100, 1), "%")
       )
       print(sw_df, row.names = FALSE)
     }
@@ -439,18 +440,22 @@ predict.fastsaegpu_merf <- function(object, newdata = NULL, ...) {
     return(object$estimates$merf)
   }
   newdata_df <- as.data.frame(newdata)
+  # Rebuild the model-matrix columns the forest was trained on (e.g. I(x^2), factor dummies)
+  if (!is.null(object$terms)) {
+    tt <- stats::delete.response(object$terms)
+    missing_vars <- setdiff(all.vars(tt), names(newdata_df))
+    if (length(missing_vars) > 0) {
+      cli::cli_abort("Missing required covariates in {.arg newdata}: {.val {missing_vars}}")
+    }
+    newdata_df <- stats::model.matrix(tt, stats::model.frame(tt, newdata_df, xlev = object$xlevels))
+  }
   # Subset to selected_vars if feature screening was active
   if (!is.null(object$selected_vars)) {
-    missing_vars <- setdiff(object$selected_vars, names(newdata_df))
+    missing_vars <- setdiff(object$selected_vars, colnames(newdata_df))
     if (length(missing_vars) > 0) {
       cli::cli_abort("Missing required covariates in {.arg newdata}: {.val {missing_vars}}")
     }
     newdata_df <- newdata_df[, object$selected_vars, drop = FALSE]
   }
-  if (object$engine == "ranger") {
-    preds <- stats::predict(object$forest, data = newdata_df)$predictions
-  } else {
-    preds <- stats::predict(object$forest, newdata = newdata_df)
-  }
-  return(preds)
+  stats::predict(object$forest, data = newdata_df)$predictions
 }

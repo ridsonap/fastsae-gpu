@@ -70,3 +70,20 @@ test_that("benchmark works for self-benchmarking and external benchmarking", {
   p_bm <- plot(bm_self)
   expect_s3_class(p_bm, "ggplot")
 })
+
+test_that("hierarchical external benchmarking skips unsampled (NA) direct estimates", {
+  df_hb <- data.frame(
+    domain = paste0("d", 1:6),
+    y = c(0.20, NA, 0.30, 0.22, 0.28, NA),
+    hb = c(0.21, 0.24, 0.29, 0.23, 0.27, 0.33),
+    mse = rep(0.002, 6),
+    group = rep(c("North", "South"), each = 3),
+    N = c(1000, 2000, 1500, 3000, 2500, 1200),
+    stringsAsFactors = FALSE
+  )
+  obj <- structure(list(df_hb = df_hb, data = df_hb, family = "beta"),
+                   class = c("fastsae_hb_area", "fastsae"))
+  bm <- benchmark(obj, target = 0.25, weight = "N", group = "group", method = "ratio")
+  expect_true(all(is.finite(bm$benchmarked)))
+  expect_equal(sum(df_hb$N * bm$benchmarked) / sum(df_hb$N), 0.25, tolerance = 1e-6)
+})

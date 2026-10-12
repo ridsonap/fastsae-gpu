@@ -7,7 +7,7 @@
 <!-- badges: end -->
 
 `fastsaegpu` adalah paket R berkinerja tinggi untuk **Small Area Estimation (SAE)** tingkat area, menggabungkan:
-1. **Hierarchical Bayesian SAE (`hb_area`)** yang diakselerasi GPU (Apple Silicon Metal & NVIDIA CUDA) berbasis **NumPyro / JAX NUTS**.
+1. **Hierarchical Bayesian SAE (`hb_area`)** yang diakselerasi GPU NVIDIA CUDA (atau CPU) berbasis **NumPyro / JAX NUTS**. Backend Apple Silicon Metal terdeteksi, tetapi jax-metal belum bisa menjalankan NUTS sehingga sampling otomatis berjalan di CPU.
 2. **Machine Learning SAE (`merf_area`)** berbasis **Mixed Effects Random Forest (MERF / FH-RF)** dengan mesin C++ multithread `ranger`.
 3. **Inovasi Metodologis Mutakhir:** GVF Variance Smoothing, Regularized Horseshoe Prior, Robust Student-$t$ Random Effects, Hierarki Bersarang Dua Tingkat (*Nested Sub-Area*), dan Kalibrasi Agregat (*In-Model & External Benchmarking*).
 
@@ -32,7 +32,7 @@
 remotes::install_github("ridsonap/fastsae-gpu")
 library(fastsaegpu)
 
-# 2. Setup otomatis lingkungan NumPyro / JAX di GPU (Apple Silicon / NVIDIA CUDA / CPU)
+# 2. Setup otomatis lingkungan NumPyro / JAX (versi ter-pin; CUDA bila nvidia-smi ada, selain itu CPU)
 setup_numpyro_env(device = "auto")
 ```
 
@@ -57,7 +57,7 @@ fit_hb <- hb_area(
   benchmark = TRUE,                  # Fitur D: In-Model Benchmarking
   benchmark_weights = "pop_weight",
   benchmark_method = "optimal",
-  device = "auto"                    # "metal", "cuda", atau "cpu"
+  device = "auto"                    # "cuda" atau "cpu" ("metal" saat ini sampling di CPU)
 )
 
 summary(fit_hb)
@@ -138,7 +138,7 @@ fit_st <- hb_area(
 | **Hierarki Wilayah** | Standar Area-Level, Two-Level Nested Sub-Area (Torabi & Rao 2014) | Kluster induk wilayah makro & sub-area mikro |
 | **Stabilisasi Varians** | `smooth_vardir = TRUE` via GVF (`log_linear`, `power`, `ratio`, `loess`) | Meredam variabilitas sampling `vardir` kecil |
 | **Kalibrasi Agregat** | `benchmark()` / `in-model`: `logit`, `optimal`, `ratio`, `difference` | Menjamin konsistensi total mikro-makro |
-| **Akselerasi** | Apple Silicon Metal (`mps`), NVIDIA CUDA, Multithread CPU | Kompilasi JIT XLA JAX & C++ ranger |
+| **Akselerasi** | NVIDIA CUDA, Multithread CPU (Metal: fallback ke CPU) | Kompilasi JIT XLA JAX & C++ ranger |
 
 ---
 

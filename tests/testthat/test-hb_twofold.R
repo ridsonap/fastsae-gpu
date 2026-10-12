@@ -84,3 +84,53 @@ test_that("hb_twofold fits Torabi & Rao 2014 model end-to-end", {
   expect_equal(length(fitted(fit)), n)
   expect_no_error(print(fit))
 })
+
+test_that("hb_twofold rejects missing covariates and subarea ids before sampling", {
+  df <- data.frame(y = c(1, 2, 1.5, 2.2), x = c(0.5, NA, 0, 1), vardir = rep(0.1, 4),
+                   area = c("A", "A", "B", "B"), sub = c("01", "02", "01", "02"))
+  expect_error(hb_twofold(y ~ x, data = df, area = "area", subarea = "sub", vardir = "vardir"),
+               "missing or non-finite")
+  df$x[2] <- 0.3
+  df$sub[3] <- NA
+  expect_error(hb_twofold(y ~ x, data = df, area = "area", subarea = "sub", vardir = "vardir"),
+               "subarea.*must not contain NA")
+})
+
+test_that("hb_twofold keeps subarea codes that restart within each area distinct", {
+  skip_on_cran()
+  skip_if_not(fastsaegpu::check_numpyro_available(), "NumPyro/JAX not available")
+  set.seed(7)
+  area <- rep(paste0("A", 1:4), each = 5)
+  sub <- sprintf("%02d", rep(1:5, 4))
+  x <- stats::rnorm(20)
+  y <- 1.5 + 0.8 * x + stats::rnorm(4, 0, 0.4)[as.integer(factor(area))] + stats::rnorm(20, 0, 0.2)
+  df <- data.frame(y = y, x = x, vardir = rep(0.04, 20), area = area, sub = sub,
+                   sub_global = paste0(area, "-", sub))
+  args <- list(y ~ x, data = df, area = "area", vardir = "vardir", warmup = 80L, samples = 100L,
+               chains = 1L, device = "cpu", print_result = FALSE)
+  fit_rel <- do.call(hb_twofold, c(args, subarea = "sub"))
+  fit_glob <- do.call(hb_twofold, c(args, subarea = "sub_global"))
+  expect_equal(fit_rel$df_hb$hb, fit_glob$df_hb$hb)
+  expect_equal(fit_rel$df_area$hb_area, fit_glob$df_area$hb_area)
+})
+
+test_that("hb_twofold area summaries handle areas without sampled subareas", {
+  skip_on_cran()
+  skip_if_not(fastsaegpu::check_numpyro_available(), "NumPyro/JAX not available")
+  set.seed(16)
+  area <- rep(c("B", "A", "C"), each = 4)
+  x <- stats::rnorm(12)
+  y <- 1 + x + stats::rnorm(12, 0, 0.3)
+  y[area == "C"] <- NA
+  w <- seq_len(12)
+  df <- data.frame(y = y, x = x, vardir = ifelse(is.na(y), NA, 0.05), area = area, w = w)
+  fit <- hb_twofold(y ~ x, data = df, area = "area", vardir = "vardir", weight = "w",
+                    warmup = 60L, samples = 60L, chains = 1L, device = "cpu", print_result = FALSE)
+  da <- fit$df_area
+  expect_equal(da$domain, c("B", "A", "C"))
+  expect_equal(da$n_subareas, c(4L, 4L, 4L))
+  expect_equal(da$weight, c(sum(1:4), sum(5:8), sum(9:12)))
+  expect_equal(da$direct[1:2], c(weighted.mean(y[1:4], 1:4), weighted.mean(y[5:8], 5:8)))
+  expect_true(is.na(da$direct[3]))
+  expect_false(anyNA(da$hb_area))
+})

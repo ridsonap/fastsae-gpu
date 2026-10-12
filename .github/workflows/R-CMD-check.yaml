@@ -54,7 +54,7 @@ jobs:
         if: matrix.config.os == 'ubuntu-latest' && matrix.config.r == 'release'
         run: |
           python -m pip install --upgrade pip
-          pip install numpy scipy "jax[cpu]" numpyro
+          pip install numpy scipy "jax==0.5.0" "jaxlib==0.5.0" "numpyro==0.19.0"
         continue-on-error: true
 
       - uses: r-lib/actions/setup-r-dependencies@v2
@@ -62,7 +62,6 @@ jobs:
           extra-packages: |
             any::rcmdcheck
             any::ranger
-            any::randomForest
             any::spdep
             any::ggplot2
             any::reticulate
@@ -127,7 +126,7 @@ jobs:
       - name: Install Python dependencies (NumPyro on CPU)
         run: |
           python -m pip install --upgrade pip
-          pip install numpy scipy "jax[cpu]" numpyro
+          pip install numpy scipy "jax==0.5.0" "jaxlib==0.5.0" "numpyro==0.19.0"
         continue-on-error: true
 
       - uses: r-lib/actions/setup-r-dependencies@v2

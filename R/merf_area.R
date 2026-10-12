@@ -24,7 +24,8 @@
 #' }
 #'
 #' @param formula Object of class \code{formula} describing the relationship
-#'   between the direct survey estimate and auxiliary covariates.
+#'   between the direct survey estimate and auxiliary covariates. Transformed terms
+#'   (e.g. \code{I(x^2)}, \code{log(x)}) and factors are expanded with \code{model.matrix()}.
 #' @param data A data frame containing survey variables and area identifiers.
 #' @param vardir Character string indicating the column name for direct sampling
 #'   variances (\eqn{\psi_i}), or a numeric vector of variances.
@@ -34,8 +35,8 @@
 #'   identifier column for two-level nested MERF (Torabi & Rao, 2014).
 #' @param spatial Optional row-standardized spatial adjacency matrix (\eqn{W})
 #'   for Spatial MERF.
-#' @param engine Character string specifying the Random Forest engine:
-#'   \code{"ranger"} (fast C++ multithreaded, default) or \code{"randomForest"}.
+#' @param engine Random Forest engine; only \code{"ranger"} (fast C++ multithreaded)
+#'   is supported.
 #' @param num_trees Number of trees in the Random Forest ensemble (default: 500).
 #' @param mtry Number of variables randomly sampled as candidates at each split.
 #'   Default is \code{max(1, floor(sqrt(ncol(X))))}.
@@ -69,7 +70,7 @@
 #'   \code{smooth_vardir = TRUE} (\code{"log_linear"}, \code{"power"},
 #'   \code{"ratio"}, or \code{"loess"}).
 #' @param num_threads Number of threads for the \code{ranger} engine. Default
-#'   is \code{NULL} (all available CPU threads).
+#'   is \code{NULL} (all available CPU threads; at most 2 when \code{_R_CHECK_LIMIT_CORES_} is set).
 #' @param seed Optional integer seed for reproducibility.
 #' @param verbose Logical; if \code{TRUE}, prints progress during iterations.
 #' @return An object of class \code{fastsaegpu_merf} containing:
@@ -86,6 +87,8 @@
 #'   \item{is_nested}{Logical indicating whether two-level nested structure was used.}
 #'   \item{is_spatial}{Logical indicating whether spatial structure was used.}
 #'   \item{gvf}{The GVF smoothing model if \code{smooth_vardir = TRUE}, else \code{NULL}.}
+#'   \item{terms, xlevels}{Model terms and factor levels used by \code{predict()} to rebuild the
+#'     covariate matrix for \code{newdata}.}
 #'   \item{call}{The matched call.}
 #' }
 #'
@@ -146,7 +149,7 @@ merf_area <- function(formula,
                       domain = NULL,
                       subarea = NULL,
                       spatial = NULL,
-                      engine = c("ranger", "randomForest"),
+                      engine = "ranger",
                       num_trees = 500,
                       mtry = NULL,
                       min_node_size = 5,
@@ -166,7 +169,7 @@ merf_area <- function(formula,
                       verbose = FALSE) {
 
   cl <- match.call()
-  engine <- match.arg(engine)
+  engine <- match.arg(engine, "ranger")
   mse_type <- match.arg(mse_type)
   gvf_method <- match.arg(gvf_method)
 
@@ -180,10 +183,13 @@ merf_area <- function(formula,
   }
 
   # Extract Response & Design Matrix
-  mf <- stats::model.frame(formula, data = data)
+  mf <- stats::model.frame(formula, data = data, na.action = stats::na.pass)
+  if (anyNA(mf)) {
+    cli::cli_abort("Response or covariates contain missing values ({sum(!stats::complete.cases(mf))} row(s)); remove or impute them before fitting {.fn merf_area}.")
+  }
   y <- stats::model.response(mf)
   terms_obj <- stats::terms(mf)
-  X <- stats::model.matrix(terms_obj, data = data)
+  X <- stats::model.matrix(terms_obj, mf)
 
   # Remove Intercept column if present because decision trees split on covariates directly
   int_idx <- which(colnames(X) == "(Intercept)")
@@ -244,17 +250,11 @@ merf_area <- function(formula,
     sub_raw <- as.character(data[[subarea]])
     dom_raw <- domain_vec
 
-    u_dom <- length(unique(dom_raw))
-    u_sub <- length(unique(sub_raw))
-
-    if (u_sub < u_dom) {
-      if (verbose) cli::cli_inform("Hierarchy auto-swap: mapping {.val {subarea}} as major area and {.val {domain}} as sub-area.")
-      major_area_vec <- sub_raw
-      subarea_vec <- dom_raw
-    } else {
-      major_area_vec <- dom_raw
-      subarea_vec <- sub_raw
-    }
+    # Swap only if domain is nested within subarea (codes restarting per area are kept as given)
+    nest <- .resolve_nesting(dom_raw, sub_raw)
+    if (nest$swapped && verbose) cli::cli_inform("Hierarchy auto-swap: mapping {.val {subarea}} as major area and {.val {domain}} as sub-area.")
+    major_area_vec <- nest$major
+    subarea_vec <- nest$sub
     is_nested <- TRUE
   }
 
@@ -267,33 +267,53 @@ merf_area <- function(formula,
         cli::cli_abort("Spatial matrix {.arg spatial} must have dimensions {D} x {D}.")
       }
       is_spatial <- TRUE
+      # SAR random effects u = A^{-1} e, A = I - rho W, with precision Q = A'A / s2.
+      # Precision form: M = Q + Psi^{-1}, so each likelihood evaluation / BLUP needs one
+      # Cholesky of M; log|A| comes from the eigenvalues of W (Ord 1975), computed once.
+      W_sym <- W + t(W)
+      WtW <- crossprod(W)
+      eig_W <- eigen(W, only.values = TRUE)$values
+      sar_chol <- function(s2, rho) {
+        M <- (diag(D) - rho * W_sym + rho^2 * WtW) / s2
+        diag(M) <- diag(M) + 1 / psi
+        tryCatch(chol(M), error = function(e) NULL)
+      }
+      # Negative log-likelihood of r ~ N(0, s2 (A'A)^{-1} + Psi), up to a constant
+      sar_nll <- function(par, r) {
+        s2 <- par[1]
+        rho <- par[2]
+        if (s2 <= 0 || rho <= -0.98 || rho >= 0.98) return(1e10)
+        mod_A <- Mod(1 - rho * eig_W)
+        if (any(mod_A < 1e-10)) return(1e10)
+        L <- sar_chol(s2, rho)
+        if (is.null(L)) return(1e10)
+        b <- r / psi
+        Minv_b <- backsolve(L, backsolve(L, b, transpose = TRUE))
+        log_det_V <- sum(log(psi)) - (2 * sum(log(mod_A)) - D * log(s2)) + 2 * sum(log(diag(L)))
+        0.5 * (log_det_V + sum(r * b) - sum(b * Minv_b))
+      }
+      # BLUP u = Sigma_u V^{-1} r = M^{-1} Psi^{-1} r
+      sar_blup <- function(s2, rho, r) {
+        L <- sar_chol(s2, rho)
+        as.vector(backsolve(L, backsolve(L, r / psi, transpose = TRUE)))
+      }
     } else {
       cli::cli_abort("{.arg spatial} must be a {D} x {D} adjacency matrix.")
     }
   }
 
-  # Check Engine
-  if (engine == "ranger") {
-    if (!requireNamespace("ranger", quietly = TRUE)) {
-      cli::cli_warn("Package {.pkg ranger} is not installed. Falling back to {.pkg randomForest}.")
-      engine <- "randomForest"
-    }
-  }
-  if (engine == "randomForest") {
-    if (!requireNamespace("randomForest", quietly = TRUE)) {
-      cli::cli_abort("Neither {.pkg ranger} nor {.pkg randomForest} is available. Please install {.pkg ranger}.")
-    }
+  # Respect CRAN's core limit for ranger's default (all cores) threading
+  if (is.null(num_threads) && nzchar(Sys.getenv("_R_CHECK_LIMIT_CORES_", unset = ""))) {
+    num_threads <- 2L
   }
 
   # --- 2. Hyperparameter Auto-Tuning (Optional) ---
   P <- ncol(X)
-  if (isTRUE(tune_params) && engine == "ranger") {
+  if (isTRUE(tune_params)) {
     if (verbose) cli::cli_inform("Tuning Random Forest hyperparameters via minimum OOB prediction error...")
     mtry_cands <- unique(pmax(1, pmin(P, c(floor(sqrt(P) / 2), floor(sqrt(P)), floor(P / 2), P))))
     node_cands <- unique(pmax(1, c(3, 5, 10)))
 
-    df_tune <- as.data.frame(X)
-    df_tune$.target <- y
     best_oob <- Inf
     best_mtry <- max(1, floor(sqrt(P)))
     best_node <- min_node_size
@@ -302,8 +322,8 @@ merf_area <- function(formula,
       for (n_c in node_cands) {
         rf_try <- tryCatch(
           ranger::ranger(
-            formula = .target ~ .,
-            data = df_tune,
+            x = X,
+            y = y,
             num.trees = min(150, num_trees),
             mtry = m_c,
             min.node.size = n_c,
@@ -330,9 +350,11 @@ merf_area <- function(formula,
   }
 
   # --- 3. Random Forest Helper Function ---
-  fit_rf <- function(X_mat, target_vec, trees = num_trees, cur_weights = NULL, seed_iter = NULL) {
-    df_rf <- as.data.frame(X_mat)
-    df_rf$.target <- target_vec
+  # x/y interface: no data.frame copy per fit and model-matrix names such as "I(x^2)" work.
+  # In-sample predictions are only computed when needed (use_oob = FALSE or for the final
+  # fit, see rf_pred()); permutation importance only where it is reported or screened.
+  fit_rf <- function(X_mat, target_vec, trees = num_trees, cur_weights = NULL, seed_iter = NULL,
+                     importance = "permutation") {
     p_cur <- ncol(X_mat)
     cur_mtry <- min(mtry, p_cur)
 
@@ -342,42 +364,27 @@ merf_area <- function(formula,
       cw <- cur_weights / mean(cur_weights)
     }
 
-    if (engine == "ranger") {
-      rf_fit <- ranger::ranger(
-        formula = .target ~ .,
-        data = df_rf,
-        num.trees = trees,
-        mtry = cur_mtry,
-        min.node.size = min_node_size,
-        importance = "permutation",
-        case.weights = cw,
-        num.threads = num_threads,
-        seed = seed_iter
-      )
-      in_preds <- stats::predict(rf_fit, data = df_rf)$predictions
-      oob_preds <- rf_fit$predictions
-      if (any(is.na(oob_preds))) {
-        oob_preds <- ifelse(is.na(oob_preds), in_preds, oob_preds)
-      }
-      vimp <- rf_fit$variable.importance
-      return(list(fit = rf_fit, pred = in_preds, pred_oob = oob_preds, importance = vimp))
-    } else {
-      rf_fit <- randomForest::randomForest(
-        x = X_mat,
-        y = target_vec,
-        ntree = trees,
-        mtry = cur_mtry,
-        nodesize = min_node_size,
-        importance = TRUE
-      )
-      in_preds <- stats::predict(rf_fit, newdata = X_mat)
-      oob_preds <- rf_fit$predicted
-      if (any(is.na(oob_preds))) {
-        oob_preds <- ifelse(is.na(oob_preds), in_preds, oob_preds)
-      }
-      vimp <- rf_fit$importance[, 1]
-      return(list(fit = rf_fit, pred = in_preds, pred_oob = oob_preds, importance = vimp))
+    rf_fit <- ranger::ranger(
+      x = X_mat,
+      y = target_vec,
+      num.trees = trees,
+      mtry = cur_mtry,
+      min.node.size = min_node_size,
+      importance = importance,
+      case.weights = cw,
+      num.threads = num_threads,
+      seed = seed_iter
+    )
+    res <- list(fit = rf_fit, X = X_mat, pred = NULL, pred_oob = rf_fit$predictions,
+                importance = rf_fit$variable.importance)
+    if (!isTRUE(use_oob) || anyNA(res$pred_oob)) {
+      res$pred <- rf_pred(res)
+      res$pred_oob <- ifelse(is.na(res$pred_oob), res$pred, res$pred_oob)
     }
+    res
+  }
+  rf_pred <- function(res) {
+    if (is.null(res$pred)) stats::predict(res$fit, data = res$X, num.threads = num_threads)$predictions else res$pred
   }
 
   # --- 4. Expectation-Maximization (EM) Loop ---
@@ -426,8 +433,7 @@ merf_area <- function(formula,
         screened_done <- TRUE
       }
 
-      f_in <- rf_res$pred
-      f_hat_eval <- if (isTRUE(use_oob)) rf_res$pred_oob else f_in
+      f_hat_eval <- if (isTRUE(use_oob)) rf_res$pred_oob else rf_res$pred
 
       # Step 3: Residuals
       r <- y - f_hat_eval
@@ -466,7 +472,7 @@ merf_area <- function(formula,
     }
 
     # Point Estimates: use in-sample predictions for synthetic baseline plus random effects
-    f_hat <- final_rf$pred
+    f_hat <- rf_pred(final_rf)
     theta_merf <- f_hat + u
     gamma_vec <- sigma2_u / (sigma2_u + psi)
 
@@ -474,7 +480,32 @@ merf_area <- function(formula,
     # Two-Level Nested MERF (Torabi & Rao, 2014)
     major_areas <- unique(major_area_vec)
     J <- length(major_areas)
-    area_idx_list <- split(seq_len(D), major_area_vec)
+    # Group index aligned with major_areas (order of first appearance)
+    grp <- match(major_area_vec, major_areas)
+    # Per-area sums without a per-call unique()/match(): rows sorted by area once, then
+    # sums of x[ord] are differences of its cumulative sum at the area ends (areas 1..J)
+    ord <- order(grp)
+    ends <- cumsum(tabulate(grp, J))
+    psi_o <- psi[ord]
+    gsum <- function(x_o) diff(c(0, cumsum(x_o)[ends]))
+    # Profile log-likelihood of r ~ N(0, s2_a Z Z' + diag(s2_s + psi)), block-diagonal by area;
+    # r_o = r[ord] (called many times by optim(), so sorted once per optimisation)
+    nll_nested <- function(par, r_o) {
+      s2_a <- par[1]
+      s2_s <- par[2]
+      if (s2_a < 0 || s2_s < 0) return(1e10)
+      d <- s2_s + psi_o
+      w <- 1 / d
+      wr <- w * r_o
+      denom <- 1 + s2_a * gsum(w)
+      0.5 * (sum(log(d)) + sum(log(pmax(1e-12, denom))) + sum(wr * r_o) - sum((s2_a / denom) * gsum(wr)^2))
+    }
+    # BLUPs of the area effects (length J, named) and of the subarea effects (length D)
+    blup_nested <- function(s2_a, s2_s, r) {
+      w_o <- 1 / (s2_s + psi_o)
+      u_major <- stats::setNames((s2_a / (1 + s2_a * gsum(w_o))) * gsum(w_o * r[ord]), major_areas)
+      list(u_major = u_major, v_sub = (s2_s / (s2_s + psi)) * (r - u_major[grp]))
+    }
 
     u_major <- stats::setNames(rep(0, J), major_areas)
     v_sub <- rep(0, D)
@@ -484,7 +515,7 @@ merf_area <- function(formula,
     final_rf <- NULL
 
     for (iter in seq_len(max_iter)) {
-      u_expanded <- u_major[major_area_vec]
+      u_expanded <- u_major[grp]
       y_star <- y - u_expanded - v_sub
 
       weights_iter <- if (isTRUE(weighted)) 1 / (sigma2_area + sigma2_sub + psi) else NULL
@@ -504,36 +535,12 @@ merf_area <- function(formula,
         screened_done <- TRUE
       }
 
-      f_in <- rf_res$pred
-      f_hat_eval <- if (isTRUE(use_oob)) rf_res$pred_oob else f_in
+      f_hat_eval <- if (isTRUE(use_oob)) rf_res$pred_oob else rf_res$pred
       r <- y - f_hat_eval
-
-      # Analytical profile log-likelihood for (sigma2_area, sigma2_sub)
-      nll_nested <- function(par) {
-        s2_a <- par[1]
-        s2_s <- par[2]
-        if (s2_a < 0 || s2_s < 0) return(1e10)
-
-        nll <- 0
-        for (j in seq_len(J)) {
-          idx_j <- area_idx_list[[j]]
-          psi_j <- psi[idx_j]
-          r_j <- r[idx_j]
-          d_j <- s2_s + psi_j
-          w_j <- 1 / d_j
-          W_sum <- sum(w_j)
-          denom <- 1 + s2_a * W_sum
-
-          log_det_Vj <- sum(log(d_j)) + log(max(1e-12, denom))
-          quad_form <- sum(w_j * (r_j^2)) - (s2_a / denom) * (sum(w_j * r_j)^2)
-          nll <- nll + 0.5 * (log_det_Vj + quad_form)
-        }
-        nll
-      }
 
       opt_res <- stats::optim(
         par = c(sigma2_area, sigma2_sub),
-        fn = nll_nested,
+        fn = nll_nested, r_o = r[ord],
         method = "L-BFGS-B",
         lower = c(1e-6, 1e-6)
       )
@@ -542,21 +549,11 @@ merf_area <- function(formula,
       sigma2_sub_new <- opt_res$par[2]
 
       # Update BLUPs analytically
-      u_major_new <- numeric(J)
-      for (j in seq_len(J)) {
-        idx_j <- area_idx_list[[j]]
-        psi_j <- psi[idx_j]
-        r_j <- r[idx_j]
-        w_j <- 1 / (sigma2_sub_new + psi_j)
-        u_major_new[j] <- (sigma2_area_new / (1 + sigma2_area_new * sum(w_j))) * sum(w_j * r_j)
-      }
-      names(u_major_new) <- major_areas
+      bl <- blup_nested(sigma2_area_new, sigma2_sub_new, r)
+      u_major_new <- bl$u_major
+      v_sub_new <- bl$v_sub
 
-      u_expanded_new <- u_major_new[major_area_vec]
-      gamma_sub <- sigma2_sub_new / (sigma2_sub_new + psi)
-      v_sub_new <- gamma_sub * (r - u_expanded_new)
-
-      u_tot_new <- u_expanded_new + v_sub_new
+      u_tot_new <- u_major_new[grp] + v_sub_new
       u_tot_old <- u_expanded + v_sub
       delta_u <- sqrt(mean((u_tot_new - u_tot_old)^2)) / (stats::sd(y) + 1e-6)
 
@@ -576,23 +573,20 @@ merf_area <- function(formula,
       }
     }
 
-    f_hat <- final_rf$pred
-    u <- u_major[major_area_vec] + v_sub
+    f_hat <- rf_pred(final_rf)
+    u <- u_major[grp] + v_sub
     sigma2_u <- sigma2_area
     theta_merf <- f_hat + u
     gamma_vec <- (sigma2_area + sigma2_sub) / (sigma2_area + sigma2_sub + psi)
 
   } else if (is_spatial) {
-    # Spatial MERF — eigenvalue trick for fast log-det (Ord 1975)
-    eig_W <- eigen(W, symmetric = FALSE, only.values = TRUE)$values
-    eig_W <- Re(eig_W)
+    # Spatial MERF (SAR random effects)
     u <- rep(0, D)
     sigma2_u <- max(0.01, stats::var(y) - mean(psi))
     rho_val <- 0.2
     converged <- FALSE
     final_rf <- NULL
 
-    I_mat <- diag(D)
     for (iter in seq_len(max_iter)) {
       y_star <- y - u
       weights_iter <- if (isTRUE(weighted)) 1 / (sigma2_u + psi) else NULL
@@ -612,40 +606,12 @@ merf_area <- function(formula,
         screened_done <- TRUE
       }
 
-      f_in <- rf_res$pred
-      f_hat_eval <- if (isTRUE(use_oob)) rf_res$pred_oob else f_in
+      f_hat_eval <- if (isTRUE(use_oob)) rf_res$pred_oob else rf_res$pred
       r <- y - f_hat_eval
-
-      A_inv_r_cached <- NULL
-      nll_spatial <- function(par) {
-        s2 <- par[1]
-        rho <- par[2]
-        if (s2 <= 0 || rho <= -0.98 || rho >= 0.98) return(1e10)
-
-        # Fast log-det via eigenvalues: log|I - rho*W| = sum(log(1 - rho*lambda_i))
-        ld_A <- sum(log(pmax(1 - rho * eig_W, 1e-8)))
-        # Use Woodbury / direct solve without forming Sigma_u explicitly
-        A <- I_mat - rho * W
-        # Solve A^{-1} * r efficiently
-        A_inv_r <- tryCatch(solve(A, r), error = function(e) NULL)
-        if (is.null(A_inv_r)) return(1e10)
-        # V = s2*(A'A)^{-1} + diag(psi) — compute log-det and quadratic form via Cholesky of V
-        # For moderate D, form V directly but reuse ld_A
-        A_inv <- tryCatch(solve(A), error = function(e) NULL)
-        if (is.null(A_inv)) return(1e10)
-        Sigma_u <- s2 * (A_inv %*% t(A_inv))
-        V <- Sigma_u + diag(psi)
-
-        L <- tryCatch(chol(V), error = function(e) NULL)
-        if (is.null(L)) return(1e10)
-        log_det_V <- 2 * sum(log(diag(L)))
-        v_inv_r <- backsolve(L, forwardsolve(t(L), r))
-        0.5 * (log_det_V + sum(r * v_inv_r))
-      }
 
       opt_res <- stats::optim(
         par = c(sigma2_u, rho_val),
-        fn = nll_spatial,
+        fn = sar_nll, r = r,
         method = "L-BFGS-B",
         lower = c(1e-5, -0.95),
         upper = c(max(10 * stats::var(y), 10), 0.95)
@@ -655,10 +621,7 @@ merf_area <- function(formula,
       rho_new <- opt_res$par[2]
 
       # Compute Spatial BLUP
-      A_inv <- solve(I_mat - rho_new * W)
-      Sigma_u <- sigma2_u_new * (A_inv %*% t(A_inv))
-      V <- Sigma_u + diag(psi)
-      u_new <- as.vector(Sigma_u %*% solve(V, r))
+      u_new <- sar_blup(sigma2_u_new, rho_new, r)
 
       delta_u <- sqrt(mean((u_new - u)^2)) / (stats::sd(y) + 1e-6)
       u <- u_new
@@ -676,7 +639,7 @@ merf_area <- function(formula,
       }
     }
 
-    f_hat <- final_rf$pred
+    f_hat <- rf_pred(final_rf)
     theta_merf <- f_hat + u
     gamma_vec <- sigma2_u / (sigma2_u + psi)
   }
@@ -700,10 +663,9 @@ merf_area <- function(formula,
         u_maj_b <- stats::rnorm(J, 0, sqrt(sigma2_area))
         names(u_maj_b) <- major_areas
         v_sub_b <- stats::rnorm(D, 0, sqrt(sigma2_sub))
-        theta_b <- f_hat + u_maj_b[major_area_vec] + v_sub_b
+        theta_b <- f_hat + u_maj_b[grp] + v_sub_b
       } else if (is_spatial) {
-        A_inv <- solve(diag(D) - rho_val * W)
-        u_b <- as.vector(A_inv %*% stats::rnorm(D, 0, sqrt(sigma2_u)))
+        u_b <- as.vector(solve(diag(D) - rho_val * W, stats::rnorm(D, 0, sqrt(sigma2_u))))
         theta_b <- f_hat + u_b
       }
       e_b <- stats::rnorm(D, 0, sqrt(psi))
@@ -716,7 +678,7 @@ merf_area <- function(formula,
         for (b_iter in seq_len(boot_max_iter)) {
           y_star_b <- y_b - u_boot
           w_b <- if (isTRUE(weighted)) 1 / (s2_boot + psi) else NULL
-          rf_b <- fit_rf(X_active, y_star_b, trees = boot_trees, cur_weights = w_b, seed_iter = seed_b)
+          rf_b <- fit_rf(X_active, y_star_b, trees = boot_trees, cur_weights = w_b, seed_iter = seed_b, importance = "none")
           f_b_eval <- if (isTRUE(use_oob)) rf_b$pred_oob else rf_b$pred
           r_b <- y_b - f_b_eval
           opt_b <- stats::optimize(
@@ -731,7 +693,7 @@ merf_area <- function(formula,
           g_b <- s2_boot / (s2_boot + psi)
           u_boot <- g_b * r_b
         }
-        theta_hat_b <- rf_b$pred + u_boot
+        theta_hat_b <- rf_pred(rf_b) + u_boot
 
       } else if (is_nested) {
         # Nested bootstrap re-fit: re-estimate sigma2_area & sigma2_subarea
@@ -740,68 +702,35 @@ merf_area <- function(formula,
         s2a_boot <- sigma2_area
         s2s_boot <- sigma2_sub
         for (b_iter in seq_len(boot_max_iter)) {
-          u_exp_boot <- u_maj_boot[major_area_vec]
+          u_exp_boot <- u_maj_boot[grp]
           y_star_b <- y_b - u_exp_boot - v_sub_boot
           w_b <- if (isTRUE(weighted)) 1 / (s2a_boot + s2s_boot + psi) else NULL
-          rf_b <- fit_rf(X_active, y_star_b, trees = boot_trees, cur_weights = w_b, seed_iter = seed_b)
+          rf_b <- fit_rf(X_active, y_star_b, trees = boot_trees, cur_weights = w_b, seed_iter = seed_b, importance = "none")
           f_b_eval <- if (isTRUE(use_oob)) rf_b$pred_oob else rf_b$pred
           r_b <- y_b - f_b_eval
-          nll_nested_b <- function(par) {
-            s2_a <- par[1]; s2_s <- par[2]
-            if (s2_a < 0 || s2_s < 0) return(1e10)
-            nll <- 0
-            for (jj in seq_len(J)) {
-              idx_jj <- area_idx_list[[jj]]
-              psi_jj <- psi[idx_jj]; r_jj <- r_b[idx_jj]
-              d_jj <- s2_s + psi_jj; w_jj <- 1 / d_jj
-              W_sum_jj <- sum(w_jj); denom_jj <- 1 + s2_a * W_sum_jj
-              nll <- nll + 0.5 * (sum(log(d_jj)) + log(max(1e-12, denom_jj)) + sum(w_jj * r_jj^2) - (s2_a / denom_jj) * sum(w_jj * r_jj)^2)
-            }
-            nll
-          }
-          opt_b <- stats::optim(par = c(s2a_boot, s2s_boot), fn = nll_nested_b, method = "L-BFGS-B", lower = c(1e-6, 1e-6))
+          opt_b <- stats::optim(par = c(s2a_boot, s2s_boot), fn = nll_nested, r_o = r_b[ord], method = "L-BFGS-B", lower = c(1e-6, 1e-6))
           s2a_boot <- opt_b$par[1]; s2s_boot <- opt_b$par[2]
-          for (jj in seq_len(J)) {
-            idx_jj <- area_idx_list[[jj]]
-            w_jj <- 1 / (s2s_boot + psi[idx_jj])
-            u_maj_boot[jj] <- (s2a_boot / (1 + s2a_boot * sum(w_jj))) * sum(w_jj * r_b[idx_jj])
-          }
-          u_exp_new <- u_maj_boot[major_area_vec]
-          v_sub_boot <- (s2s_boot / (s2s_boot + psi)) * (r_b - u_exp_new)
+          bl_b <- blup_nested(s2a_boot, s2s_boot, r_b)
+          u_maj_boot <- bl_b$u_major
+          v_sub_boot <- bl_b$v_sub
         }
-        theta_hat_b <- rf_b$pred + u_maj_boot[major_area_vec] + v_sub_boot
+        theta_hat_b <- rf_pred(rf_b) + u_maj_boot[grp] + v_sub_boot
 
       } else if (is_spatial) {
         # Spatial bootstrap re-fit: re-estimate sigma2_u & rho
         u_boot_sp <- rep(0, D)
         s2_boot_sp <- sigma2_u; rho_boot <- rho_val
-        I_D <- diag(D)
         for (b_iter in seq_len(boot_max_iter)) {
           y_star_b <- y_b - u_boot_sp
           w_b <- if (isTRUE(weighted)) 1 / (s2_boot_sp + psi) else NULL
-          rf_b <- fit_rf(X_active, y_star_b, trees = boot_trees, cur_weights = w_b, seed_iter = seed_b)
+          rf_b <- fit_rf(X_active, y_star_b, trees = boot_trees, cur_weights = w_b, seed_iter = seed_b, importance = "none")
           f_b_eval <- if (isTRUE(use_oob)) rf_b$pred_oob else rf_b$pred
           r_b <- y_b - f_b_eval
-          nll_sp_b <- function(par) {
-            s2 <- par[1]; rho_p <- par[2]
-            if (s2 <= 0 || rho_p <= -0.98 || rho_p >= 0.98) return(1e10)
-            A_p <- I_D - rho_p * W
-            A_inv_p <- tryCatch(solve(A_p), error = function(e) NULL)
-            if (is.null(A_inv_p)) return(1e10)
-            Sigma_p <- s2 * (A_inv_p %*% t(A_inv_p))
-            V_p <- Sigma_p + diag(psi)
-            L_p <- tryCatch(chol(V_p), error = function(e) NULL)
-            if (is.null(L_p)) return(1e10)
-            0.5 * (2 * sum(log(diag(L_p))) + sum(r_b * backsolve(L_p, forwardsolve(t(L_p), r_b))))
-          }
-          opt_b <- stats::optim(par = c(s2_boot_sp, rho_boot), fn = nll_sp_b, method = "L-BFGS-B", lower = c(1e-5, -0.95), upper = c(max(10 * stats::var(y_b), 10), 0.95))
+          opt_b <- stats::optim(par = c(s2_boot_sp, rho_boot), fn = sar_nll, r = r_b, method = "L-BFGS-B", lower = c(1e-5, -0.95), upper = c(max(10 * stats::var(y_b), 10), 0.95))
           s2_boot_sp <- opt_b$par[1]; rho_boot <- opt_b$par[2]
-          A_inv_n <- solve(I_D - rho_boot * W)
-          Sigma_n <- s2_boot_sp * (A_inv_n %*% t(A_inv_n))
-          V_n <- Sigma_n + diag(psi)
-          u_boot_sp <- as.vector(Sigma_n %*% solve(V_n, r_b))
+          u_boot_sp <- sar_blup(s2_boot_sp, rho_boot, r_b)
         }
-        theta_hat_b <- rf_b$pred + u_boot_sp
+        theta_hat_b <- rf_pred(rf_b) + u_boot_sp
       }
       (theta_hat_b - theta_b)^2
     }
@@ -826,8 +755,8 @@ merf_area <- function(formula,
     ci_upper <- theta_merf + 1.96 * sd_est
 
   } else {
-    # Analytical Plug-in Approximation
-    mse_est <- (1 - gamma_vec) * sigma2_u
+    # Analytical Plug-in Approximation: g1 = gamma * psi (uses total variance when nested)
+    mse_est <- gamma_vec * psi
     sd_est <- sqrt(pmax(1e-8, mse_est))
     rse_est <- abs(sd_est / theta_merf) * 100
     ci_lower <- theta_merf - 1.96 * sd_est
@@ -887,6 +816,8 @@ merf_area <- function(formula,
       hyperparams = hyperparams,
       importance = vimp_sorted,
       selected_vars = colnames(X_active),
+      terms = terms_obj,
+      xlevels = stats::.getXlevels(terms_obj, mf),
       forest = final_rf$fit,
       is_nested = is_nested,
       is_spatial = is_spatial,

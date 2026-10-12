@@ -14,11 +14,11 @@ gvf_smooth(
 )
 }
 \arguments{
-\item{y}{Numeric vector or formula term of direct area estimates.}
+\item{y}{Numeric vector of direct area estimates, or a column name in \code{data}.}
 
-\item{vardir}{Numeric vector or formula term of direct sampling variances.}
+\item{vardir}{Numeric vector of direct sampling variances, or a column name in \code{data}.}
 
-\item{n}{Optional numeric vector of area sample sizes.}
+\item{n}{Optional numeric vector of area sample sizes, or a column name in \code{data}.}
 
 \item{method}{Smoothing method: \code{"log_linear"} (default, Wolter 2007),
 \code{"power"} (Cho et al., 2002), \code{"ratio"} (CV-squared model),
@@ -31,7 +31,9 @@ or \code{"loess"} (non-parametric local regression).}
 \value{
 An object of class \code{c("fastsaegpu_gvf", "fastsae_gvf")} containing:
   \itemize{
-    \item \code{vardir_smooth}: Numeric vector of smoothed sampling variances.
+    \item \code{vardir_smooth}: Numeric vector of smoothed sampling variances. Areas with an
+      observed \code{y} but zero or missing \code{vardir} receive the model-predicted variance;
+      areas with missing \code{y} stay \code{NA}.
     \item \code{vardir_raw}: Original direct sampling variances.
     \item \code{r_squared}: R-squared metric of the smoothing model.
     \item \code{method}: The GVF model method used.

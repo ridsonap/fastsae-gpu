@@ -6,6 +6,7 @@
 #' check_numpyro_available()
 #' @export
 check_numpyro_available <- function(device = "auto") {
+  device <- match.arg(device, c("auto", "metal", "cuda", "cpu"))
   if (device == "cpu" || (device == "auto" && Sys.info()["sysname"] == "Darwin")) {
     if (!nzchar(Sys.getenv("JAX_PLATFORMS"))) {
       old_plat <- Sys.getenv("JAX_PLATFORMS", unset = NA)
@@ -49,8 +50,8 @@ check_numpyro_available <- function(device = "auto") {
 #' Setup or initialize NumPyro Python environment with GPU support
 #'
 #' @param envname Name of the conda or virtualenv environment. Default "r-numpyro-gpu".
-#' @param method "auto", "virtualenv", or "conda".
-#' @param device "auto", "metal" (Apple Silicon), "cuda" (NVIDIA), or "cpu".
+#' @param method "auto" (virtualenv), "virtualenv", or "conda".
+#' @param device "auto" (CUDA if \code{nvidia-smi} is found, otherwise CPU), "metal" (Apple Silicon), "cuda" (NVIDIA), or "cpu". Versions are pinned to tested combinations: \code{jax==0.5.0} and \code{numpyro==0.19.0} for CPU/CUDA; \code{jax==0.4.34}, \code{jaxlib==0.4.34}, \code{jax-metal==0.1.1} for Metal (NUTS still samples on CPU there).
 #' @return Invisible logical \code{TRUE} upon successful setup.
 #' @examples
 #' \dontrun{
@@ -61,35 +62,37 @@ setup_numpyro_env <- function(envname = "r-numpyro-gpu", method = "auto", device
   if (!requireNamespace("reticulate", quietly = TRUE)) {
     cli::cli_abort("Package {.pkg reticulate} is required. Install via install.packages('reticulate').")
   }
-  
-  sys_info <- Sys.info()
-  is_mac <- sys_info["sysname"] == "Darwin"
-  is_arm <- sys_info["machine"] == "arm64"
-  
+  method <- match.arg(method, c("auto", "virtualenv", "conda"))
+  device <- match.arg(device, c("auto", "metal", "cuda", "cpu"))
+
   if (device == "auto") {
-    if (is_mac && is_arm) {
-      device <- "metal"
-    } else {
-      has_nvidia <- nzchar(Sys.which("nvidia-smi"))
-      device <- if (has_nvidia) "cuda" else "cpu"
-    }
+    # Not "metal" on Apple Silicon: jax-metal cannot run NumPyro's NUTS
+    device <- if (nzchar(Sys.which("nvidia-smi"))) "cuda" else "cpu"
   }
   
   cli::cli_h2("Configuring NumPyro environment for target device: {.val {device}}")
   
-  pkgs <- c("numpy", "scipy", "numpyro")
+  # Pinned, tested combinations. jax-metal 0.1.1 (its last release) is built for
+  # jax/jaxlib 0.4.34; unpinned installs pull a jax it cannot load.
+  pkgs <- c("numpy", "scipy", "numpyro==0.19.0")
   if (device == "metal") {
-    pkgs <- c(pkgs, "jax", "jaxlib", "jax-metal")
+    pkgs <- c(pkgs, "jax==0.4.34", "jaxlib==0.4.34", "jax-metal==0.1.1")
   } else if (device == "cuda") {
-    pkgs <- c(pkgs, "jax[cuda12]")
+    pkgs <- c(pkgs, "jax[cuda12]==0.5.0")
   } else {
-    pkgs <- c(pkgs, "jax", "jaxlib")
+    pkgs <- c(pkgs, "jax==0.5.0", "jaxlib==0.5.0")
   }
   
-  cli::cli_alert_info("Creating/updating virtual environment {.val {envname}} with: {paste(pkgs, collapse = ', ')}")
-  reticulate::virtualenv_create(envname)
-  reticulate::virtualenv_install(envname, packages = pkgs)
-  reticulate::use_virtualenv(envname, required = TRUE)
+  cli::cli_alert_info("Creating/updating {method} environment {.val {envname}} with: {paste(pkgs, collapse = ', ')}")
+  if (method == "conda") {
+    reticulate::conda_create(envname)
+    reticulate::conda_install(envname, packages = pkgs, pip = TRUE)
+    reticulate::use_condaenv(envname, required = TRUE)
+  } else {
+    reticulate::virtualenv_create(envname)
+    reticulate::virtualenv_install(envname, packages = pkgs)
+    reticulate::use_virtualenv(envname, required = TRUE)
+  }
   
   cli::cli_alert_success("NumPyro GPU environment successfully configured!")
   invisible(TRUE)
@@ -120,4 +123,21 @@ setup_numpyro_env <- function(envname = "r-numpyro-gpu", method = "auto", device
   
   backend <- reticulate::import_from_path("hb_area_numpyro", path = dirname(candidates[1]))
   backend
+}
+
+#' Warn when an explicitly requested accelerator was not used
+#' @noRd
+.warn_device_fallback <- function(device, device_used) {
+  if (device == "metal" && grepl("fallback", as.character(device_used))) {
+    cli::cli_warn(c(
+      "The Metal backend could not compile NUTS (unsupported operation); sampling ran on CPU.",
+      "i" = "jax-metal does not implement the {.code popcnt} operation used by NumPyro's NUTS, so {.code device = 'metal'} always samples on CPU."
+    ))
+  } else if (device %in% c("metal", "cuda") && !grepl(device, as.character(device_used), ignore.case = TRUE)) {
+    cli::cli_warn(c(
+      "Requested {.code device = '{device}'} is not available to JAX in this session; sampling ran on {.val {device_used}}.",
+      "i" = "JAX fixes its platforms when first used in an R session: restart R and request {.val {device}} first, or check the installation with {.code setup_numpyro_env(device = '{device}')}."
+    ))
+  }
+  invisible(NULL)
 }

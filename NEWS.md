@@ -1,5 +1,62 @@
 # fastsaegpu 0.1.0
 
+### Bug fixes and hardening (pre-submission)
+
+* `hb_area()` / `hb_twofold()` (Gaussian): the response is standardized internally for the sampler
+  and draws are mapped back, so large-scale outcomes (e.g. incomes ~1e6) are no longer shrunk to 0
+  by unit-scale priors.
+* `hb_area()` benchmarking: the self-benchmark target is the weighted direct estimate over sampled
+  domains on the scale of `hb` (previously binomial/Poisson used raw counts and any `NA` response
+  turned all estimates into `NaN`); `benchmark_method` now defaults to `"logit"` for beta/binomial and
+  `"optimal"` otherwise, and `"logit"` is rejected for unbounded families.
+* `hb_area()`: `df_hb$y` is the direct estimate on the scale of `hb` (`y / trials` for binomial counts,
+  `y / exposure` for Poisson/NB with exposure) so `residuals()` and `benchmark()` are consistent
+  (**breaking**: previously raw counts). `estimated_total` / `estimated_count` use the benchmarked `hb`.
+* Nested models (`hb_area(subarea=)`, `hb_twofold()`, `merf_area(subarea=)`): subarea codes that restart
+  within each major area (`"01"`, `"02"`, ...) are no longer merged across areas, and levels are only
+  auto-swapped when `domain` is actually nested within `subarea`.
+* `merf_area()`: analytic MSE of the nested model now uses the total random-effect variance; missing
+  values in the response/covariates give a clear error instead of misaligned `vardir`; ranger uses at
+  most 2 threads under `_R_CHECK_LIMIT_CORES_`.
+* `gvf_smooth()`: areas with observed `y` but zero/missing `vardir` receive the predicted variance; too few
+  areas for the GVF model give a clear error instead of `NaN` variances.
+* `benchmark()`: hierarchical external benchmarking skips unsampled (`NA`) direct estimates.
+* Device handling: the jax-metal platform (`METAL`) is detected correctly, computation is pinned to the
+  selected device, and requesting an unavailable `"metal"`/`"cuda"` device warns instead of silently
+  running on CPU. `setup_numpyro_env(method = "conda")` now creates a conda environment.
+* Horseshoe prior: the intercept is detected from the design matrix instead of assumed to be the first
+  column (models without intercept now penalize every coefficient), and `shrinkage_factor` uses the
+  regularized local scale `lambda_tilde` actually used by the prior.
+* `merf_area()` spatial (SAR) model: likelihood and BLUP use the precision form (one Cholesky per
+  evaluation, log-determinant from the eigenvalues of `W`) instead of dense inverses; identical
+  estimates, ~6x faster for D = 400.
+* `merf_area()`: the `randomForest` engine was removed (**breaking**); `ranger` moved from Suggests to
+  Imports and `randomForest` was dropped from Suggests.
+* `setup_numpyro_env()` installs pinned, tested versions (`jax==0.5.0`, `numpyro==0.19.0`; Metal:
+  `jax==0.4.34`, `jaxlib==0.4.34`, `jax-metal==0.1.1`) and `device = "auto"` no longer selects Metal.
+  jax-metal cannot compile NumPyro's NUTS (missing `popcnt`), so `device = "metal"` samples on CPU and
+  now says so in its warning.
+* Profiling-driven fixes:
+  * `merf_area()` failed for formulas with transformed terms (`I(x^2)`, `log(x)`) because ranger's
+    formula interface rejects such column names; the forest is now fitted through the x/y interface
+    and `predict(newdata = )` rebuilds the model-matrix columns from the stored `terms`/`xlevels`.
+  * Nested `merf_area()` assigned area BLUPs in alphabetical instead of first-appearance order
+    (wrong area effects whenever the two orders differ, e.g. `P1, ..., P10`); the nested likelihood
+    and BLUPs are now vectorized (per-area sums via one precomputed ordering) and shared with the bootstrap.
+  * `merf_area()`: permutation importance is no longer computed in bootstrap refits and in-sample
+    predictions only when needed (identical estimates; ~30-35% faster with bootstrap MSE).
+  * NumPyro backend records only non-redundant per-draw arrays: `linear_pred` is derived from `hb_est`
+    after sampling and the area/subarea split of the random effect is kept only for nested models
+    (half the stored draws for non-nested models; identical estimates). Credible-interval quantiles are
+    computed in one pass and the twofold area aggregation uses a sparse matrix instead of a per-area loop.
+  * `hb_twofold()` area summaries use `rowsum()`/`tabulate()` instead of per-area loops; the unused
+    fallback (which also ignored posterior covariance) was removed.
+* Documentation: the Metal claims in DESCRIPTION/README/package help are corrected, `hb_area()` documents
+  its return value and the self-benchmark target, `gvf_smooth()` no longer advertises formula inputs.
+* Input validation: `NA` domain/subarea/time identifiers, non-positive `vardir`/`trials`/`exposure`,
+  counts above `trials`, invalid benchmark weights/targets, and spatio-temporal interactions that would
+  be silently dropped now fail with informative errors.
+
 ### Initial CRAN Release
 
 * Core estimation function `hb_area()` providing Hierarchical Bayesian area-level Small Area Estimation (SAE).
@@ -84,7 +141,7 @@
 * Mixed Effects Random Forest Small Area Estimation (`merf_area()`):
   * Implements semi-parametric Mixed Effects Random Forest (MERF) and Fay-Herriot Random Forest (FH-RF) based on Krennmair & Schmid (2022) *JRSS-C*, Hajjem et al. (2014) *JSCS*, and Bukhari et al. (2025) *IPB University*.
   * Replaces linear fixed effects $X\beta$ with non-parametric Random Forest ensemble $f(X)$, capturing complex non-linearities and high-order interactions without manual feature engineering.
-  * Fast C++ multithreaded engine powered by `ranger` (with automatic fallback to `randomForest`).
+  * Fast C++ multithreaded engine powered by `ranger`.
   * Expectation-Maximization (EM) estimation: alternates between Random Forest fitting on adjusted response $y - u$ and profile log-likelihood optimization of area variance $\sigma_u^2$ with shrinkage $u_i = \gamma_i r_i$.
   * Parametric Bootstrap MSE (`mse_type = "bootstrap"`): computes empirical bootstrap MSE, RSE, and 95% confidence intervals based on Krennmair & Schmid (2022).
   * Extensions:

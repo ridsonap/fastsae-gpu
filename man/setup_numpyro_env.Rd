@@ -9,9 +9,9 @@ setup_numpyro_env(envname = "r-numpyro-gpu", method = "auto", device = "auto")
 \arguments{
 \item{envname}{Name of the conda or virtualenv environment. Default "r-numpyro-gpu".}
 
-\item{method}{"auto", "virtualenv", or "conda".}
+\item{method}{"auto" (virtualenv), "virtualenv", or "conda".}
 
-\item{device}{"auto", "metal" (Apple Silicon), "cuda" (NVIDIA), or "cpu".}
+\item{device}{"auto" (CUDA if \code{nvidia-smi} is found, otherwise CPU), "metal" (Apple Silicon), "cuda" (NVIDIA), or "cpu". Versions are pinned to tested combinations: \code{jax==0.5.0} and \code{numpyro==0.19.0} for CPU/CUDA; \code{jax==0.4.34}, \code{jaxlib==0.4.34}, \code{jax-metal==0.1.1} for Metal (NUTS still samples on CPU there).}
 }
 \value{
 Invisible logical \code{TRUE} upon successful setup.

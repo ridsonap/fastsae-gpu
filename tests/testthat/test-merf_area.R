@@ -347,3 +347,111 @@ test_that("merf_area supports hyperparameter auto-tuning and predict method", {
   expect_false(any(is.na(p_out)))
 })
 
+
+test_that("merf_area rejects missing values instead of misaligning vardir/domain", {
+  skip_if_not_installed("ranger")
+  set.seed(11)
+  df <- data.frame(y = rnorm(20, 5), x = rnorm(20), vardir = runif(20, 0.05, 0.2), dom = paste0("d", 1:20))
+  df$y[2] <- NA
+  expect_error(
+    merf_area(y ~ x, df, vardir = "vardir", domain = "dom", mse_type = "none", num_trees = 20, num_threads = 1),
+    "missing values"
+  )
+})
+
+test_that("nested merf_area analytic MSE uses the total random-effect variance", {
+  skip_if_not_installed("ranger")
+  set.seed(12)
+  df <- data.frame(y = rnorm(24, 5), x = rnorm(24), vardir = rep(0.1, 24),
+                   prov = rep(paste0("P", 1:4), each = 6), kab = paste0("K", 1:24))
+  fit <- merf_area(y ~ x, df, vardir = "vardir", domain = "prov", subarea = "kab",
+                   mse_type = "none", num_trees = 50, num_threads = 1, seed = 1)
+  s2 <- fit$hyperparams$sigma2_area + fit$hyperparams$sigma2_subarea
+  expect_equal(fit$estimates$mse, s2 * df$vardir / (s2 + df$vardir))
+  expect_equal(fit$estimates$mse, fit$estimates$gamma * df$vardir)
+})
+
+test_that("nested merf_area does not swap levels when subarea codes restart per area", {
+  skip_if_not_installed("ranger")
+  set.seed(13)
+  prov <- rep(paste0("P", 1:6), each = 4)
+  df <- data.frame(y = rnorm(24, 5) + rnorm(6)[as.integer(factor(prov))], x = rnorm(24),
+                   vardir = rep(0.1, 24), prov = prov, kab = sprintf("%02d", rep(1:4, 6)))
+  df$kab_global <- paste(df$prov, df$kab)
+  f_rel <- merf_area(y ~ x, df, vardir = "vardir", domain = "prov", subarea = "kab",
+                     mse_type = "none", num_trees = 50, num_threads = 1, seed = 1)
+  f_glob <- merf_area(y ~ x, df, vardir = "vardir", domain = "prov", subarea = "kab_global",
+                      mse_type = "none", num_trees = 50, num_threads = 1, seed = 1)
+  expect_equal(f_rel$estimates$merf, f_glob$estimates$merf)
+  expect_equal(f_rel$hyperparams$sigma2_area, f_glob$hyperparams$sigma2_area)
+})
+
+test_that("merf_area limits ranger threads under CRAN's _R_CHECK_LIMIT_CORES_", {
+  skip_if_not_installed("ranger")
+  old <- Sys.getenv("_R_CHECK_LIMIT_CORES_", unset = NA)
+  Sys.setenv("_R_CHECK_LIMIT_CORES_" = "TRUE")
+  on.exit(if (is.na(old)) Sys.unsetenv("_R_CHECK_LIMIT_CORES_") else Sys.setenv("_R_CHECK_LIMIT_CORES_" = old))
+  threads <- c()
+  real_ranger <- ranger::ranger
+  local_mocked_bindings(ranger = function(...) {
+    threads <<- c(threads, list(...)$num.threads %||% NA)
+    real_ranger(...)
+  }, .package = "ranger")
+  set.seed(14)
+  df <- data.frame(y = rnorm(15, 5), x = rnorm(15), vardir = rep(0.1, 15))
+  merf_area(y ~ x, df, vardir = "vardir", mse_type = "none", num_trees = 20, max_iter = 2, seed = 1)
+  expect_true(length(threads) > 0 && all(threads == 2))
+})
+
+test_that("merf_area only supports the ranger engine", {
+  df <- data.frame(y = rnorm(10, 5), x = rnorm(10), vardir = rep(0.1, 10))
+  expect_error(merf_area(y ~ x, df, vardir = "vardir", engine = "randomForest", mse_type = "none"), "should be")
+  desc <- read.dcf(system.file("DESCRIPTION", package = "fastsaegpu"))
+  expect_false(any(grepl("randomForest", desc[, intersect(colnames(desc), c("Imports", "Suggests"))])))
+})
+
+test_that("spatial MERF (precision-form SAR likelihood) reproduces the reference estimates", {
+  # Reference values computed with the previous dense-inverse implementation
+  set.seed(31)
+  D <- 15
+  W <- matrix(0, D, D)
+  for (i in 1:(D - 1)) W[i, i + 1] <- W[i + 1, i] <- 1
+  W <- W / rowSums(W)
+  df <- data.frame(y = rnorm(D, 5), x = rnorm(D), vardir = rep(0.2, D))
+  f <- merf_area(y ~ x, df, vardir = "vardir", spatial = W, mse_type = "none", num_trees = 30,
+                 max_iter = 5, num_threads = 1, seed = 7)
+  expect_equal(f$hyperparams$sigma2_u, 0.8506555483, tolerance = 1e-8)
+  expect_equal(f$hyperparams$rho_spatial, 0.1538529174, tolerance = 1e-8)
+  expect_equal(f$estimates$merf[1:3], c(4.8385933455, 4.7651933511, 6.5333062904), tolerance = 1e-8)
+  fb <- merf_area(y ~ x, df, vardir = "vardir", spatial = W, mse_type = "bootstrap", B = 3, num_trees = 30,
+                  max_iter = 4, num_threads = 1, seed = 7)
+  expect_equal(fb$estimates$mse[1:4], c(0.1010705984, 0.0709315708, 0.2683125223, 0.1042269670), tolerance = 1e-8)
+})
+
+test_that("merf_area supports transformed formula terms and predict() rebuilds them for newdata", {
+  set.seed(15)
+  df <- data.frame(x = rnorm(60), x2 = rnorm(60), vardir = runif(60, 0.05, 0.2))
+  df$y <- df$x^2 + df$x2 + rnorm(60, 0, 0.3)
+  fit <- merf_area(y ~ x + I(x^2) + log(x2 + 5), df, vardir = "vardir", mse_type = "none",
+                   num_trees = 50, num_threads = 1, seed = 1)
+  expect_equal(fit$selected_vars, c("x", "I(x^2)", "log(x2 + 5)"))
+  # predict() takes raw covariates and reproduces the in-sample forest predictions
+  expect_equal(predict(fit, newdata = df[, c("x", "x2")]), fit$estimates$rf_pred)
+  expect_error(predict(fit, newdata = df[, "x", drop = FALSE]), "Missing required covariates")
+})
+
+test_that("nested merf_area is invariant to how the major areas are labelled", {
+  set.seed(5)
+  g <- rep(1:4, each = 8)
+  df <- data.frame(x = rnorm(32), vardir = rep(0.05, 32), kab = paste0("K", 1:32))
+  df$y <- 2 + df$x + c(-2, -1, 1, 2)[g] + rnorm(32, 0, 0.2)
+  fit_lab <- function(labs) {
+    df$prov <- labs[g]
+    merf_area(y ~ x, df, vardir = "vardir", domain = "prov", subarea = "kab", mse_type = "bootstrap",
+              B = 2, num_trees = 50, num_threads = 1, seed = 1)
+  }
+  a <- fit_lab(c("A", "B", "C", "D"))
+  b <- fit_lab(c("D", "C", "B", "A"))  # first-appearance order differs from alphabetical order
+  expect_equal(a$estimates$merf, b$estimates$merf)
+  expect_equal(a$estimates$mse, b$estimates$mse)
+})

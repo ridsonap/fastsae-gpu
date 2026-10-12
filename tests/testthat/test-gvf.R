@@ -49,3 +49,27 @@ test_that("gvf_smooth handles input validation gracefully", {
   expect_error(gvf_smooth(y = c(0.1, 0.2), vardir = c(0.01, 0.02), n = c(10)), "same length")
   expect_error(gvf_smooth(y = c(0.1, 0.2), vardir = c(-0.01, 0.02)), "minimum 3 required")
 })
+
+test_that("gvf_smooth imputes smoothed variances for areas with zero or missing vardir", {
+  set.seed(21)
+  D <- 25
+  y <- runif(D, 0.1, 0.8)
+  n <- sample(20:60, D, replace = TRUE)
+  v <- y * (1 - y) / n * rlnorm(D, 0, 0.2)
+  v[c(3, 7)] <- 0
+  v[9] <- NA
+  for (m in c("log_linear", "power", "ratio", "loess")) {
+    g <- gvf_smooth(y = y, vardir = v, n = n, method = m)
+    expect_true(all(is.finite(g$vardir_smooth) & g$vardir_smooth > 0), info = m)
+  }
+  # areas without a direct estimate stay NA
+  y[5] <- NA
+  expect_true(is.na(gvf_smooth(y = y, vardir = v, n = n)$vardir_smooth[5]))
+})
+
+test_that("gvf_smooth fails clearly when there are too few areas for the model", {
+  expect_error(
+    gvf_smooth(y = c(0.2, 0.3, 0.4), vardir = c(0.01, 0.02, 0.015), n = c(10, 20, 30)),
+    "Not enough valid observations"
+  )
+})

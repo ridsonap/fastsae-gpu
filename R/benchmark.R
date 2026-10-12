@@ -221,7 +221,10 @@ benchmark.fastsae_hb_area <- function(object,
           # Two-stage national target calibration across groups
           # Step 1: Calculate initial group direct totals
           g_direct <- vapply(unique_groups, function(g) {
-            idx <- which(group_vec == g)
+            idx <- which(group_vec == g & !is.na(y_dir))
+            if (!length(idx)) {
+              cli::cli_abort("No sampled domains (non-NA direct estimates) in group {.val {g}}.")
+            }
             if (type == "mean") sum(w_vec[idx] * y_dir[idx]) / sum(w_vec[idx])
             else sum(w_vec[idx] * y_dir[idx])
           }, numeric(1))

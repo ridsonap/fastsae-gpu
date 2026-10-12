@@ -11,7 +11,7 @@ merf_area(
   domain = NULL,
   subarea = NULL,
   spatial = NULL,
-  engine = c("ranger", "randomForest"),
+  engine = "ranger",
   num_trees = 500,
   mtry = NULL,
   min_node_size = 5,
@@ -33,7 +33,8 @@ merf_area(
 }
 \arguments{
 \item{formula}{Object of class \code{formula} describing the relationship
-between the direct survey estimate and auxiliary covariates.}
+between the direct survey estimate and auxiliary covariates. Transformed terms
+(e.g. \code{I(x^2)}, \code{log(x)}) and factors are expanded with \code{model.matrix()}.}
 
 \item{data}{A data frame containing survey variables and area identifiers.}
 
@@ -49,8 +50,8 @@ identifier column for two-level nested MERF (Torabi & Rao, 2014).}
 \item{spatial}{Optional row-standardized spatial adjacency matrix (\eqn{W})
 for Spatial MERF.}
 
-\item{engine}{Character string specifying the Random Forest engine:
-\code{"ranger"} (fast C++ multithreaded, default) or \code{"randomForest"}.}
+\item{engine}{Random Forest engine; only \code{"ranger"} (fast C++ multithreaded)
+is supported.}
 
 \item{num_trees}{Number of trees in the Random Forest ensemble (default: 500).}
 
@@ -99,7 +100,7 @@ point estimates with plug-in analytical approximations.}
 \code{"ratio"}, or \code{"loess"}).}
 
 \item{num_threads}{Number of threads for the \code{ranger} engine. Default
-is \code{NULL} (all available CPU threads).}
+is \code{NULL} (all available CPU threads; at most 2 when \code{_R_CHECK_LIMIT_CORES_} is set).}
 
 \item{seed}{Optional integer seed for reproducibility.}
 
@@ -120,6 +121,8 @@ An object of class \code{fastsaegpu_merf} containing:
   \item{is_nested}{Logical indicating whether two-level nested structure was used.}
   \item{is_spatial}{Logical indicating whether spatial structure was used.}
   \item{gvf}{The GVF smoothing model if \code{smooth_vardir = TRUE}, else \code{NULL}.}
+  \item{terms, xlevels}{Model terms and factor levels used by \code{predict()} to rebuild the
+    covariate matrix for \code{newdata}.}
   \item{call}{The matched call.}
 }
 }

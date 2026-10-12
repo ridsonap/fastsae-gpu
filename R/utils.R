@@ -52,6 +52,8 @@ utils::globalVariables(c(".data", "original", "benchmarked", "Importance", "Vari
     dom_chr <- as.character(domain_names)
     if (all(dom_chr %in% rownames(W_mat))) {
       W_mat <- W_mat[dom_chr, dom_chr, drop = FALSE]
+    } else {
+      cli::cli_warn("Row names of {.arg W} do not match the domain identifiers; assuming rows of {.arg W} follow the order of first appearance of domains in {.arg data}.")
     }
   }
   
@@ -79,4 +81,21 @@ utils::globalVariables(c(".data", "original", "benchmarked", "Importance", "Vari
 
   list(adj_mat = adj_mat, scale_factor = scale_factor,
        eig_values = eig$values, eig_vectors = eig$vectors)
+}
+
+#' Resolve a two-level hierarchy (major area > subarea)
+#'
+#' Swaps the levels only when `domain` is nested in `subarea` (and not the
+#' reverse). `sub_key` identifies a subarea within its major area, so codes that
+#' restart in every area (e.g. "01", "02", ...) are not merged across areas.
+#' @noRd
+.resolve_nesting <- function(domain, subarea) {
+  nested_in <- function(a, b) all(lengths(lapply(split(b, a), unique)) == 1L)
+  swapped <- !nested_in(subarea, domain) && nested_in(domain, subarea)
+  if (swapped) {
+    tmp <- domain
+    domain <- subarea
+    subarea <- tmp
+  }
+  list(major = domain, sub = subarea, sub_key = paste(domain, subarea, sep = "\r"), swapped = swapped)
 }

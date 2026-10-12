@@ -45,7 +45,7 @@ shares). If \code{NULL} (default), equal weights per subarea are used.}
 
 \item{chains}{Number of parallel MCMC chains (default 2).}
 
-\item{device}{Target hardware: "auto" (CPU on macOS for stability; use "metal" explicitly for Apple Silicon GPU), "metal", "cuda", or "cpu".}
+\item{device}{Target hardware: "auto" (CUDA on Linux/Windows, CPU on macOS), "metal", "cuda", or "cpu". As in \code{hb_area()}, \code{device="metal"} currently samples on CPU with a warning.}
 
 \item{seed}{Random seed (default 42).}
 

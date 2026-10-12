@@ -14,14 +14,15 @@
 #' @param st_interaction Spatio-temporal interaction: "none", "separable", "domain-specific",
 #'   "type1", "type2", "type3", or "type4".
 #' @param W Spatial adjacency matrix (required if spatial != "none").
-#' @param vardir Known direct sampling variances (for Gaussian and Beta).
+#' @param vardir Known direct sampling variances (for Gaussian and Beta); must be finite and strictly positive for sampled domains (see \code{smooth_vardir} for zero or missing values).
 #' @param trials Total trials / sample size per area (for Binomial).
 #' @param exposure Expected exposure / offsets (for Poisson and Negative Binomial).
 #' @param benchmark Logical: whether to enable in-model self-benchmarking or calibration (default FALSE).
 #' @param benchmark_weights Survey or population weights vector, or column name in \code{data}.
-#' @param benchmark_target Target benchmark value. If NULL (default), performs self-benchmarking
-#'   using the survey-weighted direct total.
-#' @param benchmark_method Calibration method: "logit", "optimal", "ratio", or "difference".
+#' @param benchmark_target Target benchmark value (single number on the scale of \code{hb}). If NULL (default),
+#'   performs self-benchmarking to the \code{benchmark_weights}-weighted mean of the direct
+#'   estimates over sampled domains.
+#' @param benchmark_method Calibration method: "logit", "optimal", "ratio", or "difference". If not supplied, "logit" is used for \code{family = "beta"} / \code{"binomial"} and "optimal" otherwise; "logit" is only allowed for those two families.
 #' @param prior_beta Regression prior distribution: \code{"normal"} (default) or \code{"horseshoe"}
 #'   for sparse high-dimensional shrinkage (Carvalho et al. 2010; Piironen & Vehtari 2017).
 #' @param robust Logical: whether to use heavy-tailed Student-t random effects to protect against
@@ -33,11 +34,27 @@
 #' @param warmup Number of MCMC warmup iterations (default 500).
 #' @param samples Number of MCMC post-warmup samples (default 1000).
 #' @param chains Number of parallel MCMC chains on GPU (default 2).
-#' @param device Target hardware: "auto" (CUDA on Linux/Windows, CPU on macOS for stability; use "metal" explicitly for Apple Silicon GPU), "metal" (Apple Silicon), "cuda" (NVIDIA), or "cpu". Note: \code{device="metal"} on macOS may fall back to CPU if JAX Metal shaders fail (see Details).
+#' @param device Target hardware: "auto" (CUDA on Linux/Windows, CPU on macOS for stability; use "metal" explicitly for Apple Silicon GPU), "metal" (Apple Silicon), "cuda" (NVIDIA), or "cpu". Note: with jax-metal 0.1.1 (its latest release) NUTS cannot be compiled for Metal (unsupported \code{popcnt} operation), so \code{device="metal"} samples on CPU with a warning.
 #' @param seed Random seed for MCMC reproducibility (default 42).
 #' @param print_result Logical: print summary of results upon completion (default TRUE).
-#' @param ... Additional arguments.
-#' @return An object of class \code{c("fastsae_hb_area", "fastsae")}.
+#' @param ... Currently unused.
+#' @return An object of class \code{c("fastsae_hb_area", "fastsae")}, a list with
+#'   \describe{
+#'     \item{df_hb}{Data frame with one row per observation: \code{domain}, \code{y} (direct
+#'       estimate on the scale of \code{hb}: \code{y / trials} for binomial counts, \code{y / exposure}
+#'       for Poisson / negative binomial with \code{exposure}), \code{hb} (posterior mean, benchmarked
+#'       if requested), \code{linear_pred} (posterior mean of the linear predictor on the link scale),
+#'       \code{sd}, \code{mse}, \code{rse}, \code{ci_lower}, \code{ci_upper} (95\% credible interval),
+#'       \code{random_effect}, plus \code{subarea}, \code{time}, \code{vardir}, \code{trials} /
+#'       \code{estimated_total}, \code{exposure} / \code{estimated_count} and unbenchmarked columns
+#'       when applicable. \code{hb} and \code{df_eblup} are aliases.}
+#'     \item{estcoef}{Posterior summary of the regression coefficients (with \code{shrinkage_factor}
+#'       for the horseshoe prior).}
+#'     \item{hyperpar}{Posterior means of the variance components and other hyperparameters.}
+#'     \item{goodness}{DIC, pD, WAIC and pWAIC.}
+#'     \item{device, elapsed_seconds}{Device actually used by JAX and sampling time.}
+#'     \item{benchmark_info, gvf, call, data}{Benchmark settings, GVF fit, matched call and input data.}
+#'   }
 #' @examples
 #' \donttest{
 #' if (check_numpyro_available()) {
@@ -94,6 +111,7 @@ hb_area <- function(
   ...
 ) {
   call_matched <- match.call()
+  bm_method_default <- missing(benchmark_method)
   family <- match.arg(tolower(family), choices = c("gaussian", "binomial", "poisson", "beta", "nbinomial", "gamma"))
   spatial <- match.arg(tolower(spatial), choices = c("none", "besag", "bym2", "bym", "leroux"))
   temporal <- match.arg(tolower(temporal), choices = c("none", "ar1", "rw1", "iid"))
@@ -140,24 +158,25 @@ hb_area <- function(
     domain_raw <- .get_variable(data, domain)
   }
 
+  if (anyNA(domain_raw)) cli::cli_abort("{.arg domain} must not contain missing values.")
+  if (anyNA(subarea_raw)) cli::cli_abort("{.arg subarea} must not contain missing values.")
+
   is_nested <- !is.null(subarea_raw)
   if (is_nested) {
-    u_dom <- length(unique(domain_raw))
-    u_sub <- length(unique(subarea_raw))
-    # Intelligent hierarchy auto-detection: if domain has more levels than subarea, user inverted them
-    if (u_dom > u_sub) {
-      cli::cli_alert_info("Hierarchical subarea detected: auto-mapping {.val {u_sub}} major areas and {.val {u_dom}} subareas.")
-      tmp <- domain_raw
-      domain_raw <- subarea_raw
-      subarea_raw <- tmp
+    # Hierarchy auto-detection: swap only if domain is nested within subarea
+    nest <- .resolve_nesting(domain_raw, subarea_raw)
+    domain_raw <- nest$major
+    subarea_raw <- nest$sub
+    if (nest$swapped) {
+      cli::cli_alert_info("Hierarchical subarea detected: auto-mapping {.val {length(unique(domain_raw))}} major areas and {.val {length(unique(nest$sub_key))}} subareas.")
     }
     unique_domains <- unique(domain_raw)
     n_domains <- length(unique_domains)
     domain_idx <- as.integer(factor(domain_raw, levels = unique_domains)) - 1L
 
-    unique_subareas <- unique(subarea_raw)
+    unique_subareas <- unique(nest$sub_key)
     n_subareas <- length(unique_subareas)
-    subarea_idx <- as.integer(factor(subarea_raw, levels = unique_subareas)) - 1L
+    subarea_idx <- as.integer(factor(nest$sub_key, levels = unique_subareas)) - 1L
 
     domain_vec <- domain_raw
     subarea_vec <- subarea_raw
@@ -173,8 +192,17 @@ hb_area <- function(
   }
 
   time_vec <- if (!is.null(time)) .get_variable(data, time) else NULL
+  if (anyNA(time_vec)) cli::cli_abort("{.arg time} must not contain missing values.")
   if (temporal != "none" && is.null(time_vec)) {
     cli::cli_abort("When {.code temporal != 'none'}, {.arg time} column must be specified.")
+  }
+  if (st_interaction != "none") {
+    if (temporal == "none") {
+      cli::cli_abort("{.code st_interaction = '{st_interaction}'} requires a temporal effect ({.code temporal != 'none'}).")
+    }
+    if (st_interaction %in% c("type3", "type4", "separable") && spatial == "none") {
+      cli::cli_abort("{.code st_interaction = '{st_interaction}'} requires a structured spatial effect ({.code spatial != 'none'}).")
+    }
   }
   unique_times <- if (!is.null(time_vec)) sort(unique(time_vec)) else NULL
   n_times <- if (!is.null(unique_times)) length(unique_times) else 1L
@@ -220,20 +248,48 @@ hb_area <- function(
 
   # Validate response data by likelihood family
   y <- y_raw
+  # Direct estimate on the scale of the HB estimate (proportion / rate)
+  y_direct <- y_raw
   if (family == "gaussian") {
     if (is.null(vardir_vec)) {
       cli::cli_abort("For {.code family = 'gaussian'}, {.arg vardir} must be specified.")
     }
+  }
+  if (family %in% c("gaussian", "beta") && !is.null(vardir_vec)) {
+    bad <- !is.na(y) & !(is.finite(vardir_vec) & vardir_vec > 0)
+    if (any(bad)) {
+      cli::cli_abort(c(
+        "{.arg vardir} must be finite and strictly positive for sampled domains ({sum(bad)} invalid).",
+        "i" = "Zero or missing sampling variances can be imputed with {.code smooth_vardir = TRUE}."
+      ))
+    }
+  }
+  if (family %in% c("poisson", "nbinomial") && !is.null(exposure_vec)) {
+    bad <- !is.na(y) & !(is.finite(exposure_vec) & exposure_vec > 0)
+    if (any(bad)) {
+      cli::cli_abort("{.arg exposure} must be finite and strictly positive for sampled domains ({sum(bad)} invalid).")
+    }
+    y_direct <- y_raw / exposure_vec
   }
 
   if (family == "binomial") {
     if (is.null(trials_vec)) {
       cli::cli_abort("For {.code family = 'binomial'}, {.arg trials} must be specified.")
     }
+    bad <- !is.na(y) & !(is.finite(trials_vec) & trials_vec > 0)
+    if (any(bad)) {
+      cli::cli_abort("{.arg trials} must be finite and strictly positive for sampled domains ({sum(bad)} invalid).")
+    }
     y_valid <- y[!is.na(y)]
     if (length(y_valid) > 0 && all(y_valid >= 0 & y_valid <= 1) && any(y_valid %% 1 != 0)) {
       cli::cli_alert_info("Response appears to be proportions; converting to integer counts: {.code round(y * trials)}.")
       y <- as.numeric(round(y * trials_vec))
+    } else {
+      y_direct <- y / trials_vec
+    }
+    obs <- !is.na(y)
+    if (any(y[obs] < 0 | y[obs] > trials_vec[obs])) {
+      cli::cli_abort("For {.code family = 'binomial'}, response must be counts in [0, trials] or proportions in [0, 1].")
     }
   }
 
@@ -289,6 +345,28 @@ hb_area <- function(
         cli::cli_abort("When {.code benchmark = TRUE}, {.arg benchmark_weights} must be provided or present in {.arg data}.")
       }
     }
+    if (any(!is.finite(bm_weights_vec) | bm_weights_vec <= 0)) {
+      cli::cli_abort("{.arg benchmark_weights} must be finite and strictly positive for all domains.")
+    }
+    bounded <- family %in% c("beta", "binomial")
+    if (bm_method_default) {
+      benchmark_method <- if (bounded) "logit" else "optimal"
+    } else if (benchmark_method == "logit" && !bounded) {
+      cli::cli_abort("{.code benchmark_method = 'logit'} requires estimates in (0, 1) ({.code family = 'beta'} or {.code 'binomial'}).")
+    }
+    if (!is.null(benchmark_target)) {
+      if (!is.numeric(benchmark_target) || length(benchmark_target) != 1 || !is.finite(benchmark_target)) {
+        cli::cli_abort("{.arg benchmark_target} must be a single finite number.")
+      }
+      if (benchmark_method == "logit" && (benchmark_target <= 0 || benchmark_target >= 1)) {
+        cli::cli_abort("For {.code benchmark_method = 'logit'}, {.arg benchmark_target} must be in (0, 1).")
+      }
+      bm_target_val <- as.numeric(benchmark_target)
+    } else {
+      # Self-benchmarking: weighted direct estimate over sampled domains
+      obs <- !is.na(y_direct)
+      bm_target_val <- sum(bm_weights_vec[obs] * y_direct[obs]) / sum(bm_weights_vec[obs])
+    }
   }
 
   # 4. Invoke NumPyro Python Backend
@@ -324,13 +402,14 @@ hb_area <- function(
     seed = as.integer(seed),
     benchmark = isTRUE(benchmark),
     benchmark_weights = bm_weights_vec,
-    benchmark_target = if (!is.null(benchmark_target)) as.numeric(benchmark_target) else NULL,
+    benchmark_target = if (isTRUE(benchmark)) bm_target_val else NULL,
     benchmark_method = benchmark_method,
     prior_beta = prior_beta,
     robust = isTRUE(robust)
   )
   elapsed <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
   cli::cli_alert_success("Sampling completed in {round(elapsed, 2)} seconds.")
+  .warn_device_fallback(device, fit_py$device_used)
 
   # 5. Extract and format outputs
   beta_mean <- as.numeric(fit_py$beta_mean)
@@ -350,9 +429,7 @@ hb_area <- function(
 
   if (prior_beta == "horseshoe" && !is.null(fit_py$shrinkage_weights)) {
     sw <- as.numeric(fit_py$shrinkage_weights)
-    if (length(sw) == (length(coef_names) - 1)) {
-      estcoef$shrinkage_factor <- c(0, round(sw, 4))
-    } else if (length(sw) == length(coef_names)) {
+    if (length(sw) == length(coef_names)) {
       estcoef$shrinkage_factor <- round(sw, 4)
     }
   }
@@ -379,7 +456,7 @@ hb_area <- function(
 
   df_hb <- data.frame(
     domain = domain_vec,
-    y = y_raw,
+    y = y_direct,
     hb = hb_final,
     linear_pred = linpred,
     sd = sd_final,
@@ -408,11 +485,11 @@ hb_area <- function(
   }
   if (!is.null(trials_vec) && family == "binomial") {
     df_hb$trials <- trials_vec
-    df_hb$estimated_total <- hb_pred * trials_vec
+    df_hb$estimated_total <- hb_final * trials_vec
   }
   if (!is.null(exposure_vec) && family %in% c("poisson", "nbinomial")) {
     df_hb$exposure <- exposure_vec
-    df_hb$estimated_count <- hb_pred * exposure_vec
+    df_hb$estimated_count <- hb_final * exposure_vec
   }
 
   hyper_names <- names(fit_py$hyperparameters)
