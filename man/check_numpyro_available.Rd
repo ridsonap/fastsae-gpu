@@ -13,7 +13,11 @@ check_numpyro_available(device = "auto")
 Logical indicating whether the environment is properly configured.
 }
 \description{
-Check if NumPyro and JAX environment is available
+Looks for the \code{r-numpyro-gpu} virtualenv (see
+\code{\link{setup_numpyro_env}}) or any Python already configured for
+'reticulate'. The check never installs or downloads anything: the
+managed ('uv') Python of 'reticulate' is not provisioned unless the
+\code{RETICULATE_USE_MANAGED_VENV} environment variable is set.
 }
 \examples{
 check_numpyro_available()

@@ -46,3 +46,30 @@ test_that("setup_numpyro_env pins tested jax / jax-metal / numpyro versions", {
   suppressMessages(setup_numpyro_env("x", device = "auto"))
   expect_false(any(grepl("jax-metal", pkgs[[4]])))
 })
+
+test_that("check_numpyro_available never provisions reticulate's managed uv Python", {
+  skip_if_not_installed("reticulate")
+  seen <- NULL
+  local_mocked_bindings(
+    py_available = function(...) FALSE,
+    use_virtualenv = function(...) invisible(NULL),
+    py_module_available = function(module) {
+      seen <<- c(seen, Sys.getenv("RETICULATE_USE_MANAGED_VENV", unset = NA))
+      FALSE
+    },
+    .package = "reticulate"
+  )
+  old <- Sys.getenv("RETICULATE_USE_MANAGED_VENV", unset = NA)
+  on.exit(if (is.na(old)) Sys.unsetenv("RETICULATE_USE_MANAGED_VENV") else
+    Sys.setenv(RETICULATE_USE_MANAGED_VENV = old), add = TRUE)
+  Sys.unsetenv("RETICULATE_USE_MANAGED_VENV")
+  expect_false(check_numpyro_available(device = "cpu"))
+  expect_identical(unique(seen), "no")
+  expect_true(is.na(Sys.getenv("RETICULATE_USE_MANAGED_VENV", unset = NA)))
+
+  # an explicit user choice is respected
+  seen <- NULL
+  Sys.setenv(RETICULATE_USE_MANAGED_VENV = "yes")
+  expect_false(check_numpyro_available(device = "cpu"))
+  expect_identical(unique(seen), "yes")
+})

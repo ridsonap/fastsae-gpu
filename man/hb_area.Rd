@@ -105,22 +105,22 @@ Generalized Variance Functions (GVF) before estimation (default FALSE).}
 }
 \value{
 An object of class \code{c("fastsae_hb_area", "fastsae")}, a list with
-\describe{
-  \item{df_hb}{Data frame with one row per observation: \code{domain}, \code{y} (direct
-    estimate on the scale of \code{hb}: \code{y / trials} for binomial counts, \code{y / exposure}
-    for Poisson / negative binomial with \code{exposure}), \code{hb} (posterior mean, benchmarked
-    if requested), \code{linear_pred} (posterior mean of the linear predictor on the link scale),
-    \code{sd}, \code{mse}, \code{rse}, \code{ci_lower}, \code{ci_upper} (95\% credible interval),
-    \code{random_effect}, plus \code{subarea}, \code{time}, \code{vardir}, \code{trials} /
-    \code{estimated_total}, \code{exposure} / \code{estimated_count} and unbenchmarked columns
-    when applicable. \code{hb} and \code{df_eblup} are aliases.}
-  \item{estcoef}{Posterior summary of the regression coefficients (with \code{shrinkage_factor}
-    for the horseshoe prior).}
-  \item{hyperpar}{Posterior means of the variance components and other hyperparameters.}
-  \item{goodness}{DIC, pD, WAIC and pWAIC.}
-  \item{device, elapsed_seconds}{Device actually used by JAX and sampling time.}
-  \item{benchmark_info, gvf, call, data}{Benchmark settings, GVF fit, matched call and input data.}
-}
+  \describe{
+    \item{df_hb}{Data frame with one row per observation: \code{domain}, \code{y} (direct
+      estimate on the scale of \code{hb}: \code{y / trials} for binomial counts, \code{y / exposure}
+      for Poisson / negative binomial with \code{exposure}), \code{hb} (posterior mean, benchmarked
+      if requested), \code{linear_pred} (posterior mean of the linear predictor on the link scale),
+      \code{sd}, \code{mse}, \code{rse}, \code{ci_lower}, \code{ci_upper} (95\% credible interval),
+      \code{random_effect}, plus \code{subarea}, \code{time}, \code{vardir}, \code{trials} /
+      \code{estimated_total}, \code{exposure} / \code{estimated_count} and unbenchmarked columns
+      when applicable. \code{hb} and \code{df_eblup} are aliases.}
+    \item{estcoef}{Posterior summary of the regression coefficients (with \code{shrinkage_factor}
+      for the horseshoe prior).}
+    \item{hyperpar}{Posterior means of the variance components and other hyperparameters.}
+    \item{goodness}{DIC, pD, WAIC and pWAIC.}
+    \item{device, elapsed_seconds}{Device actually used by JAX and sampling time.}
+    \item{benchmark_info, gvf, call, data}{Benchmark settings, GVF fit, matched call and input data.}
+  }
 }
 \description{
 Hierarchical Bayes for Area-Level Small Area Estimation with GPU NumPyro Backend

@@ -1,5 +1,11 @@
 #' Check if NumPyro and JAX environment is available
 #'
+#' Looks for the \code{r-numpyro-gpu} virtualenv (see
+#' \code{\link{setup_numpyro_env}}) or any Python already configured for
+#' 'reticulate'. The check never installs or downloads anything: the
+#' managed ('uv') Python of 'reticulate' is not provisioned unless the
+#' \code{RETICULATE_USE_MANAGED_VENV} environment variable is set.
+#'
 #' @param device Character: "auto", "metal", "cuda", or "cpu".
 #' @return Logical indicating whether the environment is properly configured.
 #' @examples
@@ -28,6 +34,12 @@ check_numpyro_available <- function(device = "auto") {
 
   if (!reticulate::py_available()) {
     try(reticulate::use_virtualenv("r-numpyro-gpu", required = FALSE), silent = TRUE)
+    # A check must not download anything: without this, reticulate (>= 1.41)
+    # provisions a 'uv'-managed Python into the user cache when none is configured.
+    if (is.na(Sys.getenv("RETICULATE_USE_MANAGED_VENV", unset = NA))) {
+      Sys.setenv(RETICULATE_USE_MANAGED_VENV = "no")
+      on.exit(Sys.unsetenv("RETICULATE_USE_MANAGED_VENV"), add = TRUE)
+    }
   }
   
   has_np <- reticulate::py_module_available("numpyro")

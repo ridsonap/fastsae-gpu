@@ -375,7 +375,7 @@ hb_twofold <- function(
 #' @export
 print.fastsae_hb_twofold <- function(x, ...) {
   cli::cli_h1("Hierarchical Bayes Twofold Subarea SAE (Torabi & Rao 2014, GPU)")
-  if (!is.null(x$call)) cli::cli_text("{.strong Call}: {deparse(x$call)}")
+  if (!is.null(x$call)) cli::cli_text("{.strong Call}: {deparse1(x$call)}")
   cli::cli_text("{.strong Backend}: NumPyro / JAX on {.val {x$device}}")
   cli::cli_text("{.strong Areas}: {nrow(x$Est_area)} | {.strong Subareas}: {nrow(x$Est_sub)} ({sum(!x$Est_sub$sampled)} non-sampled)")
   if (!is.null(x$icc_nested)) cli::cli_text("{.strong ICC}: {round(x$icc_nested, 4)}")

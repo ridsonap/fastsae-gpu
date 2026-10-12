@@ -12,4 +12,6 @@
 #' @name fastsaegpu-package
 #' @aliases fastsaegpu
 #' @keywords internal
+#' @import cli stats utils
+#' @importFrom Matrix Matrix
 "_PACKAGE"

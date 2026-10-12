@@ -3,7 +3,6 @@
 <!-- badges: start -->
 [![R-CMD-check](https://github.com/ridsonap/fastsae-gpu/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/ridsonap/fastsae-gpu/actions/workflows/R-CMD-check.yaml)
 [![Codecov test coverage](https://codecov.io/gh/ridsonap/fastsae-gpu/branch/main/graph/badge.svg)](https://app.codecov.io/gh/ridsonap/fastsae-gpu)
-[![CRAN status](https://www.r-pkg.org/badges/version/fastsaegpu)](https://CRAN.R-project.org/package=fastsaegpu)
 <!-- badges: end -->
 
 `fastsaegpu` adalah paket R berkinerja tinggi untuk **Small Area Estimation (SAE)** tingkat area, menggabungkan:
@@ -15,7 +14,7 @@
 
 ## 🚀 Fitur Utama
 
-- **Akselerasi JAX/XLA (CUDA atau CPU):** NUTS MCMC dikompilasi JIT oleh XLA. Pada data `emilia_cs` (Beta, CPU Apple M4; [`benchmarks/benchmark_summary.csv`](benchmarks/benchmark_summary.csv)) sekitar **3,8x lebih cepat** dari Stan (`tipsae`) untuk model spasial dan **1,9x** untuk spatio-temporal, tetapi ~7x lebih lambat untuk model non-spasial kecil; INLA (`fastsae`) tetap jauh lebih cepat bila aproksimasi Laplace memadai.
+- **Akselerasi JAX/XLA (CUDA atau CPU):** NUTS MCMC dikompilasi JIT oleh XLA. Pada data `emilia_cs` (Beta, CPU Apple M4; [`benchmarks/benchmark_summary.csv`](https://github.com/ridsonap/fastsae-gpu/blob/main/benchmarks/benchmark_summary.csv)) sekitar **3,8x lebih cepat** dari Stan (`tipsae`) untuk model spasial dan **1,9x** untuk spatio-temporal, tetapi ~7x lebih lambat untuk model non-spasial kecil; INLA (`fastsae`) tetap jauh lebih cepat bila aproksimasi Laplace memadai.
 - **Machine Learning Semi-Parametrik (`merf_area`):** Menangkap non-linearitas dan interaksi kompleks tanpa *feature engineering* manual, didukung estimasi Parametric Bootstrap MSE.
 - **Penanganan Big Data & Noise:** *Regularized Horseshoe Prior* memangkas 95%+ kovariat bising (*noise covariates*) secara otomatis.
 - **Ketahanan Anomali / Guncangan Lokal:** Distribusi efek acak *heavy-tailed* Student-$t$ mengisolasi *outlier* wilayah tanpa merusak estimasi area sekitarnya.
@@ -157,7 +156,7 @@ Pengujian empiris dilakukan pada populasi finis tergenerasi ($N \approx 125.000$
 | **fastsaegpu (Standard MERF)** | Machine Learning | 4.79% | **6.29%** | 1.07x | 0.34s |
 | **fastsaegpu (Enhanced MERF)** | Machine Learning Sinergi | 4.91% | 6.31% | **1.08x** | **0.18s** |
 
-> *Skrip dan visualisasi replikasi lengkap tersedia di folder [`benchmarks/`](benchmarks/).*
+> *Skrip dan visualisasi replikasi lengkap tersedia di folder [`benchmarks/`](https://github.com/ridsonap/fastsae-gpu/tree/main/benchmarks).*
 
 ---
 

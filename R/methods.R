@@ -53,7 +53,7 @@ NULL
 print.fastsae_hb_area <- function(x, ...) {
   cli::cli_h1("GPU-Accelerated Hierarchical Bayesian Small Area Estimation")
   if (!is.null(x$call)) {
-    cli::cli_text("{.strong Call}: {deparse(x$call)}")
+    cli::cli_text("{.strong Call}: {deparse1(x$call)}")
   }
   cli::cli_text("{.strong Backend}: NumPyro / JAX on {.val {x$device}}")
   cli::cli_text("{.strong Family}: {toupper(x$family)}")
@@ -182,6 +182,16 @@ residuals.fastsae_hb_area <- function(object, ...) {
 #'   \item \code{summary}: A list containing calibration summary statistics.
 #'   \item \code{plot}: A \code{ggplot2} object visualizing the benchmark adjustment.
 #' }
+#' @examples
+#' set.seed(1)
+#' D <- 20
+#' df <- data.frame(domain = paste0("d", 1:D), y = rnorm(D, 10), vardir = 0.5, x = rnorm(D))
+#' fit <- merf_area(y ~ x, data = df, vardir = "vardir", domain = "domain",
+#'                  num_trees = 50, mse_type = "none", seed = 1)
+#' bm <- benchmark(fit, target = 10, weight = rep(1, D))
+#' print(bm)
+#' summary(bm)
+#' if (requireNamespace("ggplot2", quietly = TRUE)) plot(bm)
 #' @name fastsaegpu_benchmark-methods
 NULL
 
@@ -281,7 +291,7 @@ plot.fastsaegpu_benchmark <- function(x, ...) {
 print.fastsaegpu_merf <- function(x, ...) {
   cli::cli_h1("Mixed Effects Random Forest Small Area Estimation (MERF / FH-RF)")
   if (!is.null(x$call)) {
-    cli::cli_text("{.strong Call}: {deparse(x$call)}")
+    cli::cli_text("{.strong Call}: {deparse1(x$call)}")
   }
   cli::cli_text("{.strong Engine}: {x$engine} (Random Forest)")
   if (isTRUE(x$is_nested)) {
@@ -357,7 +367,7 @@ summary.fastsaegpu_merf <- function(object, ...) {
 print.summary.fastsaegpu_merf <- function(x, ...) {
   cli::cli_h1("Summary of MERF Small Area Estimation (FH-RF)")
   if (!is.null(x$call)) {
-    cli::cli_text("{.strong Call}: {deparse(x$call)}")
+    cli::cli_text("{.strong Call}: {deparse1(x$call)}")
   }
   cli::cli_text("Domains: {x$n_domains} | Engine: {x$engine}")
   cli::cli_text("Iterations: {x$hyperparams$iterations} (Converged: {x$hyperparams$converged})")

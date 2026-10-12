@@ -4,12 +4,15 @@ Title: GPU-Accelerated Hierarchical Bayesian Small Area Estimation
 Version: 0.1.0
 Authors@R: person("Ridson", "Al Farizal P", role = c("aut", "cre"), email = "alfrzlp@gmail.com")
 Description: Hierarchical Bayesian area-level Small Area Estimation (SAE)
-    with spatio-temporal dynamics powered by 'NumPyro' <https://num.pyro.ai/>
-    and 'JAX' <https://jax.readthedocs.io/> on NVIDIA (CUDA) GPUs or the CPU
-    (the Apple Silicon 'Metal' backend cannot yet run the NUTS sampler, so it
-    falls back to the CPU). Provides spatial,
-    temporal, and spatio-temporal interactions for continuous, count, and
-    bounded survey outcomes using Markov Chain Monte Carlo (MCMC) sampling.
+    based on the Fay-Herriot model (Fay and Herriot, 1979)
+    <doi:10.1080/01621459.1979.10482505>, with spatio-temporal dynamics
+    powered by 'NumPyro' (Phan et al., 2019) <doi:10.48550/arXiv.1912.11554>
+    and 'JAX' <https://jax.readthedocs.io/> on NVIDIA 'CUDA' GPUs or the
+    CPU (the Apple Silicon 'Metal' backend cannot yet run the NUTS sampler,
+    so it falls back to the CPU). Provides spatial, temporal, and
+    spatio-temporal interactions for continuous, count, and bounded survey
+    outcomes using Markov Chain Monte Carlo (MCMC) sampling, plus mixed
+    effects random forests, generalized variance functions, and benchmarking.
 License: GPL (>= 3)
 URL: https://github.com/ridsonap/fastsae-gpu
 BugReports: https://github.com/ridsonap/fastsae-gpu/issues
@@ -17,6 +20,7 @@ Depends:
     R (>= 4.1.0)
 Imports:
     cli,
+    graphics,
     Matrix,
     ranger,
     reticulate,
@@ -28,6 +32,8 @@ Suggests:
     spdep,
     testthat (>= 3.0.0),
     xml2
+SystemRequirements: Python (>= 3.10) with 'jax' and 'numpyro' (optional,
+    needed by hb_area() and hb_twofold(); see setup_numpyro_env())
 Encoding: UTF-8
 RoxygenNote: 7.3.2
 Config/testthat/edition: 3

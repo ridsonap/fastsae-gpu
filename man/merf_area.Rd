@@ -152,7 +152,6 @@ Enhanced methodological features:
 }
 }
 \examples{
-\donttest{
 set.seed(42)
 D <- 30
 x1 <- rnorm(D)
@@ -183,7 +182,6 @@ fit_rf <- merf_area(
   seed = 123
 )
 print(fit_rf)
-}
 }
 \references{
 Krennmair, P., & Schmid, T. (2022). Flexible small area estimation using

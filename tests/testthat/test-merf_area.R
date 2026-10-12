@@ -459,3 +459,17 @@ test_that("nested merf_area is invariant to how the major areas are labelled", {
   expect_equal(a$estimates$merf, b$estimates$merf)
   expect_equal(a$estimates$mse, b$estimates$mse)
 })
+
+test_that("print shows a long call verbatim (no cli list collapsing of deparse lines)", {
+  set.seed(1)
+  D <- 20
+  df <- data.frame(domain = paste0("d", 1:D), y = rnorm(D), vardir = 0.1,
+                   x1 = rnorm(D), x2 = rnorm(D))
+  fit <- merf_area(y ~ x1 + x2, data = df, vardir = "vardir", domain = "domain",
+                   weighted = TRUE, use_oob = TRUE, num_trees = 20, max_iter = 2,
+                   mse_type = "none", seed = 1, verbose = FALSE)
+  expect_gt(length(deparse(fit$call)), 1L)
+  out <- paste(cli::cli_fmt(print(fit)), collapse = " ")
+  expect_false(grepl(", ,", out, fixed = TRUE))
+  expect_false(grepl(", and ", out, fixed = TRUE))
+})

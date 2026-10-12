@@ -110,7 +110,6 @@
 #'   two-level model. *Survey Methodology*, 40(1), 43-56.
 #'
 #' @examples
-#' \donttest{
 #' set.seed(42)
 #' D <- 30
 #' x1 <- rnorm(D)
@@ -141,7 +140,6 @@
 #'   seed = 123
 #' )
 #' print(fit_rf)
-#' }
 #' @export
 merf_area <- function(formula,
                       data,
