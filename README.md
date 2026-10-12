@@ -15,7 +15,7 @@
 
 ## 🚀 Fitur Utama
 
-- **Akselerasi GPU & SIMD:** Eksekusi NUTS MCMC paralel di GPU dengan kompilasi XLA JIT JAX. Hingga **4x lebih cepat** dibandingkan Stan (`tipsae`) pada model spasial.
+- **Akselerasi JAX/XLA (CUDA atau CPU):** NUTS MCMC dikompilasi JIT oleh XLA. Pada data `emilia_cs` (Beta, CPU Apple M4; [`benchmarks/benchmark_summary.csv`](benchmarks/benchmark_summary.csv)) sekitar **3,8x lebih cepat** dari Stan (`tipsae`) untuk model spasial dan **1,9x** untuk spatio-temporal, tetapi ~7x lebih lambat untuk model non-spasial kecil; INLA (`fastsae`) tetap jauh lebih cepat bila aproksimasi Laplace memadai.
 - **Machine Learning Semi-Parametrik (`merf_area`):** Menangkap non-linearitas dan interaksi kompleks tanpa *feature engineering* manual, didukung estimasi Parametric Bootstrap MSE.
 - **Penanganan Big Data & Noise:** *Regularized Horseshoe Prior* memangkas 95%+ kovariat bising (*noise covariates*) secara otomatis.
 - **Ketahanan Anomali / Guncangan Lokal:** Distribusi efek acak *heavy-tailed* Student-$t$ mengisolasi *outlier* wilayah tanpa merusak estimasi area sekitarnya.
@@ -144,18 +144,18 @@ fit_st <- hb_area(
 
 ## 📊 Ringkasan Bukti Empiris & Validasi
 
-Pengujian empiris dilakukan pada populasi finis tergenerasi ($N \approx 125.000$ individu, $D = 50$ wilayah, 12 kovariat, 4 *outlier shocks*) terhadap **Ground Truth Sejati ($\bar{Y}_d$)**:
+Pengujian empiris dilakukan pada populasi finis tergenerasi ($N \approx 125.000$ individu, $D = 50$ wilayah, 12 kovariat, 4 *outlier shocks*) terhadap **Ground Truth Sejati ($\bar{Y}_d$)**. Dijalankan ulang dengan versi terkini pada 2026-10-12 (CPU Apple M4; model HB berjalan di CPU via JAX/XLA):
 
 | Model SAE | Paradigma | ARB (%) | RRMSE (%) | Relative Efficiency (RE) | Waktu Komputasi |
 | :--- | :--- | :---: | :---: | :---: | :---: |
 | **Direct Survey Estimator** | Survei Langsung | 5.05% | 6.39% | 1.00x *(Baseline)* | Instant |
 | **fastsae (Frequentist EBLUP)** | Frekuentis REML | 5.00% | 6.39% | 1.03x | 0.003s |
-| **fastsae (INLA Laplace)** | Bayes Deterministik | 5.07% | 6.51% | 1.02x | 1.98s |
-| **tipsae (Stan NUTS CPU)** | Bayes MCMC (Stan) | 5.03% | 6.53% | 0.99x | 1.71s |
-| **fastsaegpu (Standard HB)** | Bayes MCMC (GPU) | 5.00% | 6.48% | 1.01x | 18.81s |
-| **fastsaegpu (Best HB Synergy)** | Bayes Sinergi (GPU) | **4.72%** | 6.50% | **1.11x (Tertinggi!)** | 27.73s |
-| **fastsaegpu (Standard MERF)** | Machine Learning | 4.79% | **6.29%** | 1.07x | 0.38s |
-| **fastsaegpu (Enhanced MERF)** | Machine Learning Sinergi | 4.91% | 6.31% | **1.08x** | **0.24s (Tercepat!)** |
+| **fastsae (INLA Laplace)** | Bayes Deterministik | 5.07% | 6.51% | 1.02x | 2.05s |
+| **tipsae (Stan NUTS CPU)** | Bayes MCMC (Stan) | 5.03% | 6.53% | 0.99x | 1.69s |
+| **fastsaegpu (Standard HB)** | Bayes MCMC (NumPyro, CPU) | 5.00% | 6.48% | 1.01x | 18.80s |
+| **fastsaegpu (Best HB Synergy)** | Bayes Sinergi (NumPyro, CPU) | **4.73%** | 6.46% | **1.10x (Tertinggi)** | 20.78s |
+| **fastsaegpu (Standard MERF)** | Machine Learning | 4.79% | **6.29%** | 1.07x | 0.34s |
+| **fastsaegpu (Enhanced MERF)** | Machine Learning Sinergi | 4.91% | 6.31% | **1.08x** | **0.18s** |
 
 > *Skrip dan visualisasi replikasi lengkap tersedia di folder [`benchmarks/`](benchmarks/).*
 

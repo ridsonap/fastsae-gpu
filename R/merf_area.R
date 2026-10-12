@@ -267,36 +267,7 @@ merf_area <- function(formula,
         cli::cli_abort("Spatial matrix {.arg spatial} must have dimensions {D} x {D}.")
       }
       is_spatial <- TRUE
-      # SAR random effects u = A^{-1} e, A = I - rho W, with precision Q = A'A / s2.
-      # Precision form: M = Q + Psi^{-1}, so each likelihood evaluation / BLUP needs one
-      # Cholesky of M; log|A| comes from the eigenvalues of W (Ord 1975), computed once.
-      W_sym <- W + t(W)
-      WtW <- crossprod(W)
-      eig_W <- eigen(W, only.values = TRUE)$values
-      sar_chol <- function(s2, rho) {
-        M <- (diag(D) - rho * W_sym + rho^2 * WtW) / s2
-        diag(M) <- diag(M) + 1 / psi
-        tryCatch(chol(M), error = function(e) NULL)
-      }
-      # Negative log-likelihood of r ~ N(0, s2 (A'A)^{-1} + Psi), up to a constant
-      sar_nll <- function(par, r) {
-        s2 <- par[1]
-        rho <- par[2]
-        if (s2 <= 0 || rho <= -0.98 || rho >= 0.98) return(1e10)
-        mod_A <- Mod(1 - rho * eig_W)
-        if (any(mod_A < 1e-10)) return(1e10)
-        L <- sar_chol(s2, rho)
-        if (is.null(L)) return(1e10)
-        b <- r / psi
-        Minv_b <- backsolve(L, backsolve(L, b, transpose = TRUE))
-        log_det_V <- sum(log(psi)) - (2 * sum(log(mod_A)) - D * log(s2)) + 2 * sum(log(diag(L)))
-        0.5 * (log_det_V + sum(r * b) - sum(b * Minv_b))
-      }
-      # BLUP u = Sigma_u V^{-1} r = M^{-1} Psi^{-1} r
-      sar_blup <- function(s2, rho, r) {
-        L <- sar_chol(s2, rho)
-        as.vector(backsolve(L, backsolve(L, r / psi, transpose = TRUE)))
-      }
+      sar <- .sar_likelihood(W, psi)
     } else {
       cli::cli_abort("{.arg spatial} must be a {D} x {D} adjacency matrix.")
     }
@@ -611,7 +582,7 @@ merf_area <- function(formula,
 
       opt_res <- stats::optim(
         par = c(sigma2_u, rho_val),
-        fn = sar_nll, r = r,
+        fn = sar$nll, r = r,
         method = "L-BFGS-B",
         lower = c(1e-5, -0.95),
         upper = c(max(10 * stats::var(y), 10), 0.95)
@@ -621,7 +592,7 @@ merf_area <- function(formula,
       rho_new <- opt_res$par[2]
 
       # Compute Spatial BLUP
-      u_new <- sar_blup(sigma2_u_new, rho_new, r)
+      u_new <- sar$blup(sigma2_u_new, rho_new, r)
 
       delta_u <- sqrt(mean((u_new - u)^2)) / (stats::sd(y) + 1e-6)
       u <- u_new
@@ -726,9 +697,9 @@ merf_area <- function(formula,
           rf_b <- fit_rf(X_active, y_star_b, trees = boot_trees, cur_weights = w_b, seed_iter = seed_b, importance = "none")
           f_b_eval <- if (isTRUE(use_oob)) rf_b$pred_oob else rf_b$pred
           r_b <- y_b - f_b_eval
-          opt_b <- stats::optim(par = c(s2_boot_sp, rho_boot), fn = sar_nll, r = r_b, method = "L-BFGS-B", lower = c(1e-5, -0.95), upper = c(max(10 * stats::var(y_b), 10), 0.95))
+          opt_b <- stats::optim(par = c(s2_boot_sp, rho_boot), fn = sar$nll, r = r_b, method = "L-BFGS-B", lower = c(1e-5, -0.95), upper = c(max(10 * stats::var(y_b), 10), 0.95))
           s2_boot_sp <- opt_b$par[1]; rho_boot <- opt_b$par[2]
-          u_boot_sp <- sar_blup(s2_boot_sp, rho_boot, r_b)
+          u_boot_sp <- sar$blup(s2_boot_sp, rho_boot, r_b)
         }
         theta_hat_b <- rf_pred(rf_b) + u_boot_sp
       }
@@ -832,4 +803,44 @@ merf_area <- function(formula,
   )
 
   res
+}
+
+#' SAR random-effect likelihood in precision form
+#'
+#' Random effects u = A^{-1} e with A = I - rho W and Var(e) = s2 I, so the
+#' precision is Q = A'A / s2 and r ~ N(0, Q^{-1} + Psi). With M = Q + Psi^{-1},
+#' each likelihood evaluation and BLUP needs a single Cholesky of M, and log|A|
+#' comes from the eigenvalues of W computed once (Ord 1975).
+#' @return List of `nll(par, r)` (negative log-likelihood up to a constant, with
+#'   `par = c(s2, rho)`) and `blup(s2, rho, r)` (u = Sigma_u V^{-1} r = M^{-1} Psi^{-1} r).
+#' @noRd
+.sar_likelihood <- function(W, psi) {
+  D <- nrow(W)
+  W_sym <- W + t(W)
+  WtW <- crossprod(W)
+  eig_W <- eigen(W, only.values = TRUE)$values
+  chol_M <- function(s2, rho) {
+    M <- (diag(D) - rho * W_sym + rho^2 * WtW) / s2
+    diag(M) <- diag(M) + 1 / psi
+    tryCatch(chol(M), error = function(e) NULL)
+  }
+  list(
+    nll = function(par, r) {
+      s2 <- par[1]
+      rho <- par[2]
+      if (s2 <= 0 || rho <= -0.98 || rho >= 0.98) return(1e10)
+      mod_A <- Mod(1 - rho * eig_W)
+      if (any(mod_A < 1e-10)) return(1e10)
+      L <- chol_M(s2, rho)
+      if (is.null(L)) return(1e10)
+      b <- r / psi
+      Minv_b <- backsolve(L, backsolve(L, b, transpose = TRUE))
+      log_det_V <- sum(log(psi)) - (2 * sum(log(mod_A)) - D * log(s2)) + 2 * sum(log(diag(L)))
+      0.5 * (log_det_V + sum(r * b) - sum(b * Minv_b))
+    },
+    blup = function(s2, rho, r) {
+      L <- chol_M(s2, rho)
+      as.vector(backsolve(L, backsolve(L, r / psi, transpose = TRUE)))
+    }
+  )
 }

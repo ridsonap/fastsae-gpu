@@ -89,7 +89,9 @@ jobs:
             found=1
             echo "===== $f ====="
             tail -n 40 "$f"
-            grep -E "Error( in|:)|Execution halted" "$f" | head -n 6 | while IFS= read -r line; do
+            # `|| true`: the step runs with `bash -eo pipefail`, so a file without errors
+            # (grep exit 1) would abort the step before the failing log is reached
+            { grep -E "Error( in|:)|Execution halted|Failure \(|^── (Error|Failure)" "$f" || true; } | head -n 6 | while IFS= read -r line; do
               msg=$(printf '%s' "$line" | tr -d '\r\n' | cut -c1-390)
               printf '::error title=fastsaegpu check failure::%s\n' "$msg"
             done

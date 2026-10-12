@@ -410,22 +410,26 @@ test_that("merf_area only supports the ranger engine", {
   expect_false(any(grepl("randomForest", desc[, intersect(colnames(desc), c("Imports", "Suggests"))])))
 })
 
-test_that("spatial MERF (precision-form SAR likelihood) reproduces the reference estimates", {
-  # Reference values computed with the previous dense-inverse implementation
+test_that("precision-form SAR likelihood and BLUP match the dense covariance formulas", {
+  # Platform-independent check of the math (forests differ across platforms, the algebra does not)
   set.seed(31)
-  D <- 15
+  D <- 12
   W <- matrix(0, D, D)
   for (i in 1:(D - 1)) W[i, i + 1] <- W[i + 1, i] <- 1
+  W[1, 5] <- W[5, 1] <- 1
   W <- W / rowSums(W)
-  df <- data.frame(y = rnorm(D, 5), x = rnorm(D), vardir = rep(0.2, D))
-  f <- merf_area(y ~ x, df, vardir = "vardir", spatial = W, mse_type = "none", num_trees = 30,
-                 max_iter = 5, num_threads = 1, seed = 7)
-  expect_equal(f$hyperparams$sigma2_u, 0.8506555483, tolerance = 1e-8)
-  expect_equal(f$hyperparams$rho_spatial, 0.1538529174, tolerance = 1e-8)
-  expect_equal(f$estimates$merf[1:3], c(4.8385933455, 4.7651933511, 6.5333062904), tolerance = 1e-8)
-  fb <- merf_area(y ~ x, df, vardir = "vardir", spatial = W, mse_type = "bootstrap", B = 3, num_trees = 30,
-                  max_iter = 4, num_threads = 1, seed = 7)
-  expect_equal(fb$estimates$mse[1:4], c(0.1010705984, 0.0709315708, 0.2683125223, 0.1042269670), tolerance = 1e-8)
+  psi <- runif(D, 0.05, 0.3)
+  r <- rnorm(D)
+  sar <- fastsaegpu:::.sar_likelihood(W, psi)
+  for (par in list(c(0.8, 0.15), c(0.3, -0.6), c(2.5, 0.9))) {
+    A_inv <- solve(diag(D) - par[2] * W)
+    Sigma_u <- par[1] * A_inv %*% t(A_inv)
+    V <- Sigma_u + diag(psi)
+    nll_dense <- 0.5 * (as.numeric(determinant(V)$modulus) + sum(r * solve(V, r)))
+    expect_equal(sar$nll(par, r), nll_dense, tolerance = 1e-10)
+    expect_equal(sar$blup(par[1], par[2], r), as.vector(Sigma_u %*% solve(V, r)), tolerance = 1e-10)
+  }
+  expect_equal(sar$nll(c(1, 0.99), r), 1e10)
 })
 
 test_that("merf_area supports transformed formula terms and predict() rebuilds them for newdata", {
